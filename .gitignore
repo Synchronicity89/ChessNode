@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+
+# Testing
+coverage/
+.junit/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Env
+.env
+.env.*
+
+# Cache
+.cache/
+.nyc_output/

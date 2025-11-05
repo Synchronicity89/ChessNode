@@ -1,0 +1,22 @@
+{
+  "name": "chessnode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Compact 64-bit chess engine experiments",
+  "main": "src/position64.js",
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watchAll",
+    "coverage": "jest --coverage"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "roots": ["<rootDir>/src/tests"],
+    "testMatch": [
+      "**/?(*.)+(spec|test).[jt]s?(x)"
+    ]
+  }
+}
