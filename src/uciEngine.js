@@ -8,6 +8,14 @@ const readline = require('readline');
 const pos64 = require('./position64');
 const db = require('./dbAdapter');
 const cheat = require('./cheatStore');
+// Use chess.js to generate a simple legal move for the side to move
+let Chess;
+try {
+  // Prefer CJS build in Node
+  Chess = require('chess.js').Chess;
+} catch (e) {
+  Chess = null;
+}
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: false });
 
@@ -83,9 +91,32 @@ function processPositionCommand(arg) {
 }
 
 // minimal random move generator (placeholder)
+function normalizeFenSixFields(fen) {
+  // Ensure FEN has 6 fields for chess.js
+  const parts = fen.trim().split(/\s+/);
+  if (parts.length >= 6) return fen;
+  if (parts.length === 4) return fen + ' 0 1';
+  // if malformed, fallback to startpos
+  return 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+}
+
 function pickRandomMove() {
-  // Very small placeholder: always reply with a legal-sounding move "a2a3"
-  return 'a2a3';
+  // If chess.js available, generate a legal move from lastFen; otherwise default
+  if (Chess && lastFen) {
+    try {
+      const game = new Chess(normalizeFenSixFields(lastFen));
+      const moves = game.moves({ verbose: true });
+      if (moves && moves.length > 0) {
+        // simple pick: first move
+        const m = moves[0];
+        const promo = m.promotion ? m.promotion : '';
+        return `${m.from}${m.to}${promo}`;
+      }
+    } catch (e) {
+      // fall through to default
+    }
+  }
+  return 'a7a6'; // safer default for black's first move
 }
 
 console.log('id name Tiny64Engine');

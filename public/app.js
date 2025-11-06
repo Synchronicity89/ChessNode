@@ -1,4 +1,5 @@
-'use strict';
+// app.js (ES module)
+import { Chess } from '/vendor/chess-esm.js';
 
 (function () {
   const game = new Chess();
@@ -16,7 +17,7 @@
 
   function onDragStart(source, piece) {
     // do not pick up pieces if the game is over
-    if (game.game_over()) return false;
+  if (game.isGameOver()) return false;
     // only pick up pieces for the side to move
     if ((game.turn() === 'w' && piece.search(/^b/) !== -1) || (game.turn() === 'b' && piece.search(/^w/) !== -1)) {
       return false;
@@ -46,20 +47,20 @@
     const moveColor = game.turn() === 'w' ? 'White' : 'Black';
 
     // checkmate?
-    if (game.in_checkmate()) {
+    if (game.isCheckmate()) {
       status = 'Game over, ' + (moveColor === 'White' ? 'Black' : 'White') + ' is victorious via checkmate.';
-    } else if (game.in_draw()) {
+    } else if (game.isDraw()) {
       status = 'Game over, drawn position';
     } else {
       status = moveColor + ' to move';
-      if (game.in_check()) status += ', ' + moveColor + ' is in check';
+      if (game.isCheck()) status += ', ' + moveColor + ' is in check';
     }
 
     statusEl.textContent = status;
   }
 
   async function engineMove() {
-    if (game.game_over()) return;
+  if (game.isGameOver()) return;
     const fen = game.fen().split(' ');
     // chess.js returns FEN with halfmove/fullmove; our server expects 4 fields
     const shortFen = fen.slice(0, 4).join(' ');
@@ -105,6 +106,7 @@
   const config = {
     draggable: true,
     position: 'start',
+    pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
     onDragStart: onDragStart,
     onDrop: onDrop,
     onSnapEnd: onSnapEnd,

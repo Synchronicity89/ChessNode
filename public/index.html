@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ChessNode — Play vs Engine</title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css" integrity="sha512-I+Si3DR5SImUmiYH0RbVQ7rC9ZCqlzRXwhM2b1wqBzae+I3MNRLAkpG2Oa/OH0mK2s1c/6j2qk6n+U4KZs3Ogw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <!-- Local vendor CSS to avoid CDN/SRI issues -->
+  <link rel="stylesheet" href="/vendor/chessboard.css" />
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 0; }
     header { padding: 12px 16px; background: #111; color: #fff; }
@@ -35,8 +36,9 @@
     </div>
   </main>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/1.0.0/chess.min.js" integrity="sha512-1+UH0qXbIOq1kHB4k00n7HJMWqFnbekH7mJ3ctyTtYH9xwYihkWDf5cP5Ouy6uP9gQfOaQWbR6+3bL/7xg2vkw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js" integrity="sha512-+KsD2CLN3N6yFCZyiC2mC1T9s4n9Xc98oRsrnCziD4p5Gv9b4vZK2Budh3pOM0uJ7lW7n1E2M2l0mQ0oI9w0Ew==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-  <script src="/app.js"></script>
+  <!-- jQuery required by chessboard.js build -->
+  <script src="/vendor/jquery.js"></script>
+  <script src="/vendor/chessboard.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>

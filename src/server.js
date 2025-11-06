@@ -15,6 +15,17 @@ async function main() {
   // Static files
   const publicDir = path.resolve(__dirname, '..', 'public');
   app.use(express.static(publicDir));
+  // Serve vendor assets locally to avoid CDN issues
+  const vendorMap = [
+    { route: '/vendor/jquery.js', file: require.resolve('jquery/dist/jquery.min.js') },
+    // ESM build for browser usage
+    { route: '/vendor/chess-esm.js', file: require.resolve('chess.js/dist/esm/chess.js') },
+    { route: '/vendor/chessboard.js', file: require.resolve('@chrisoakman/chessboardjs/dist/chessboard-1.0.0.min.js') },
+    { route: '/vendor/chessboard.css', file: require.resolve('@chrisoakman/chessboardjs/dist/chessboard-1.0.0.min.css') },
+  ];
+  for (const v of vendorMap) {
+    app.get(v.route, (req, res) => res.sendFile(v.file));
+  }
 
   // Create a single engine instance for now
   const engine = new UciClient();
