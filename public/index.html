@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChessNode — Play vs Engine</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css" integrity="sha512-I+Si3DR5SImUmiYH0RbVQ7rC9ZCqlzRXwhM2b1wqBzae+I3MNRLAkpG2Oa/OH0mK2s1c/6j2qk6n+U4KZs3Ogw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 0; }
+    header { padding: 12px 16px; background: #111; color: #fff; }
+    main { max-width: 1100px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: 520px 1fr; gap: 20px; }
+    #board { width: 520px; }
+    .panel { border: 1px solid #ddd; border-radius: 8px; padding: 12px; background: #fafafa; }
+    .controls button { margin-right: 8px; }
+    .status { margin-top: 10px; font-size: 14px; color: #333; }
+    .log { height: 300px; overflow-y: auto; background: #fff; padding: 8px; border: 1px solid #eee; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ChessNode — Play vs Engine</h1>
+  </header>
+  <main>
+    <div>
+      <div id="board" class="board"></div>
+      <div class="panel controls">
+        <button id="btn-new">New Game</button>
+        <button id="btn-switch">Switch Sides</button>
+        <span class="status" id="status">Ready</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Move Log</h3>
+      <div id="log" class="log"></div>
+    </div>
+  </main>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/1.0.0/chess.min.js" integrity="sha512-1+UH0qXbIOq1kHB4k00n7HJMWqFnbekH7mJ3ctyTtYH9xwYihkWDf5cP5Ouy6uP9gQfOaQWbR6+3bL/7xg2vkw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js" integrity="sha512-+KsD2CLN3N6yFCZyiC2mC1T9s4n9Xc98oRsrnCziD4p5Gv9b4vZK2Budh3pOM0uJ7lW7n1E2M2l0mQ0oI9w0Ew==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
