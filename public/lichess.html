@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ChessNode — Lichess Downloader</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; padding: 0; }
+    header { padding: 12px 16px; background: #111; color: #fff; }
+    main { max-width: 900px; margin: 0 auto; padding: 16px; }
+    form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    label { display: flex; flex-direction: column; font-size: 13px; color: #333; }
+    input, select { padding: 8px; font-size: 14px; }
+    .row { grid-column: span 2; }
+    button { padding: 10px 14px; font-weight: 600; }
+    .log { margin-top: 16px; background: #f8f8f8; border: 1px solid #eee; padding: 12px; height: 260px; overflow: auto; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ChessNode — Lichess Downloader</h1>
+  </header>
+  <main>
+    <p>Provide a Lichess token and filters. If you omit the token here, the server will use the one in <code>API_KEYS/Lichess/API_token.json</code>.</p>
+    <form id="dlForm">
+      <label>Token (optional)
+        <input type="password" id="token" placeholder="Bearer token" autocomplete="off" />
+      </label>
+      <label>Username (required)
+        <input type="text" id="username" placeholder="lichess username" required />
+      </label>
+      <label>Max games
+        <input type="number" id="max" min="1" max="100000" value="200" />
+      </label>
+      <label>Min rating (approx GM 2500+)
+        <input type="number" id="minRating" min="0" max="3000" value="2500" />
+      </label>
+      <label>Rated only
+        <select id="rated">
+          <option value="true" selected>True</option>
+          <option value="false">False</option>
+        </select>
+      </label>
+      <label>Perf type
+        <select id="perfType">
+          <option value="">Any</option>
+          <option value="classical">Classical</option>
+          <option value="rapid">Rapid</option>
+          <option value="blitz">Blitz</option>
+          <option value="bullet">Bullet</option>
+        </select>
+      </label>
+      <div class="row">
+        <button type="submit">Download & Index</button>
+        <a href="/" style="margin-left:8px;">Back to Play</a>
+      </div>
+    </form>
+    <div class="log" id="log"></div>
+  </main>
+  <script src="/lichess.js" type="module"></script>
+</body>
+</html>

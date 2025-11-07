@@ -24,3 +24,11 @@ Thumbs.db
 # Cache
 .cache/
 .nyc_output/
+
+# Downloaded data (ignored)
+data/
+cache/
+
+# API keys: keep folder, ignore contents
+API_KEYS/**
+!API_KEYS/.gitkeep

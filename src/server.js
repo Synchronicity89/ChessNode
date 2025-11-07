@@ -5,6 +5,8 @@
 const express = require('express');
 const path = require('path');
 const { UciClient } = require('./uciClient');
+const { getLichessToken } = require('./secrets');
+const { downloadAndIndex } = require('./lichessDownloader');
 
 const PORT = process.env.PORT || 3000;
 
@@ -47,6 +49,24 @@ async function main() {
       await engine.setPositionFen(fen);
       const bestmove = await engine.go();
       res.json({ ok: true, bestmove });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
+  // Lichess downloader UI
+  app.get('/lichess', (req, res) => {
+    res.sendFile(path.resolve(publicDir, 'lichess.html'));
+  });
+
+  app.post('/api/lichess/download', async (req, res) => {
+    try {
+      const { token, username, max, rated, perfType, minRating } = req.body || {};
+      const tok = token && token.trim() ? token.trim() : getLichessToken();
+      if (!tok) return res.status(400).json({ ok: false, error: 'Missing token: provide in body or API_KEYS/Lichess/API_token.json' });
+      if (!username) return res.status(400).json({ ok: false, error: 'username is required' });
+      const result = await downloadAndIndex({ token: tok, username, max, rated, perfType, minRating });
+      res.json(result);
     } catch (e) {
       res.status(500).json({ ok: false, error: String(e) });
     }

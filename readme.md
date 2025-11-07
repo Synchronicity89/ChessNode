@@ -186,3 +186,57 @@ The format system designed here remains valid throughout all future evolution.
 
 MIT — open for adaptation and experimentation.
 
+---
+
+## API keys (optional integrations)
+- Lichess Downloader UI: http://localhost:3000/lichess
+	- Provide a Lichess username and optional filters; the server will use your token from `API_KEYS/Lichess/API_token.json` unless you provide one in the form.
+
+### Lichess download, cache, and position database
+
+The endpoint `/api/lichess/download` and the page `/lichess` let you download games from Lichess and index all positions:
+
+- PGNs are cached under `cache/lichess/<criteria-hash>/games.pgn`.
+- Unique positions are written to `data/game_positions/<criteria-hash>.jsonl`.
+- Each record contains:
+	- `hi` and `lo`: two 64-bit integers serialized as hex strings
+	- `fen`: canonical 4-field FEN (no halfmove/fullmove)
+	- `method`: `format2` when directly packed, `cheat` when using the cheat-store reference, or `zero` if packing failed
+
+Incremental global database:
+
+- In addition to the per-run file, new positions are appended to `data/game_positions/global.jsonl`.
+- Deduplication across runs is handled by `data/game_positions/global.index` (SHA-1 of canonical 4-field FENs).
+- The API response includes `globalAdded` = number of positions newly added to the global DB in that run.
+
+Notes:
+
+- Deduplication: positions are deduped by canonical 4-field FEN during indexing to avoid duplicates.
+- Two 64-bit integers: when a position compresses into Format 2 it stores in `lo` with `hi=0`. Otherwise, a cheat-store reference is encoded in `lo` (format1-cheat) and `hi=0`. If encoding ever fails, both `hi` and `lo` are `0x0`, and the `fen` still records the position for verification.
+- The position DB (`data/`) and cache (`cache/`) are ignored by Git.
+
+If you plan to integrate with external services (e.g., Lichess), store secrets in the `API_KEYS` folder at the repository root. The folder itself is committed to source control, but its contents are ignored.
+
+Folder layout (example):
+
+```
+API_KEYS/
+	.gitkeep                  # placeholder so the folder exists in Git
+	Lichess/
+		API_token.json          # your private API token (ignored by Git)
+```
+
+Create the file `API_KEYS/Lichess/API_token.json` with this shape:
+
+```json
+{
+	"token": "your-lichess-api-token"
+}
+```
+
+Notes:
+
+- The `.gitignore` is configured to ignore everything under `API_KEYS/` except the `.gitkeep` placeholder. Your real tokens won’t be committed by accident.
+- The sample file may be present locally with a dummy string, but it will not be tracked by Git.
+- Replace the dummy string with your real token before running any code that talks to Lichess.
+
