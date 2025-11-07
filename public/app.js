@@ -59,16 +59,106 @@ import { Chess } from '/vendor/chess-esm.js';
     statusEl.textContent = status;
   }
 
+  function fen4() {
+    const parts = game.fen().split(' ');
+    return parts.slice(0, 4).join(' ');
+  }
+
+  async function showFen() {
+    const f4 = fen4();
+    log('FEN4: ' + f4);
+  }
+
+  async function searchPosition() {
+    const f4 = fen4();
+    try {
+      const res = await fetch('/api/book/position?fen=' + encodeURIComponent(f4));
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'query failed');
+      log('DB has current position: ' + (data.exists ? 'YES' : 'NO'));
+    } catch (e) { log('Error: ' + e.message); }
+  }
+
+  function listCountersLocal() {
+    const legal = game.moves({ verbose: true });
+    const f4 = fen4();
+    const counters = [];
+    for (const m of legal) {
+      const tmp = new Chess(game.fen());
+      tmp.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
+      const f4to = tmp.fen().split(' ').slice(0, 4).join(' ');
+      const uci = m.from + m.to + (m.promotion || '');
+      counters.push({ uci, san: m.san, toFen: f4to });
+    }
+    counters.sort((a, b) => a.uci.localeCompare(b.uci));
+    log('Counters (' + counters.length + '):');
+    for (const c of counters) log(' - ' + c.san + ' (' + c.uci + ') => ' + c.toFen);
+    return counters;
+  }
+
+  async function searchCountersInDB(counters) {
+    const fens = counters.map(c => c.toFen);
+    try {
+      const res = await fetch('/api/book/positions/exist', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fens })
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'query failed');
+      let hits = 0;
+      for (const c of counters) {
+        c.inDB = !!data.exists[c.toFen];
+        if (c.inDB) hits++;
+      }
+      log('DB hits among counters: ' + hits + ' of ' + counters.length);
+      for (const c of counters) log('   ' + c.uci + ' -> ' + (c.inDB ? 'HIT' : 'miss'));
+    } catch (e) { log('Error: ' + e.message); }
+  }
+
+  async function listBookCounters() {
+    const f4 = fen4();
+    try {
+      const res = await fetch('/api/book/countermoves?fen=' + encodeURIComponent(f4));
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'query failed');
+      const cands = data.candidates || [];
+      if (cands.length === 0) { log('Book candidates: 0'); return []; }
+      log('Book candidates: ' + cands.length);
+      for (const c of cands) log(` • ${c.uci} (count=${c.count}) => ${c.to}`);
+      return cands;
+    } catch (e) { log('Error: ' + e.message); return []; }
+  }
+
+  async function playRandomDBCounter() {
+    // Prefer book candidates; fall back to local counters with DB hits
+    const cands = await listBookCounters();
+    let pool = cands.map(c => ({ uci: c.uci }));
+    if (pool.length === 0) {
+      const counters = listCountersLocal();
+      await searchCountersInDB(counters);
+      pool = counters.filter(c => c.inDB).map(c => ({ uci: c.uci }));
+    }
+    if (pool.length === 0) { log('No DB-backed counters available.'); return; }
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    const u = pick.uci;
+    const from = u.slice(0,2), to = u.slice(2,4), promo = u.slice(4) || undefined;
+    const mv = game.move({ from, to, promotion: promo || 'q' });
+    if (!mv) { log('Picked illegal counter? ' + u); return; }
+    board.position(game.fen());
+    log('Manual DB: ' + mv.san + ' (' + u + ')');
+    updateStatus();
+  }
   async function engineMove() {
   if (game.isGameOver()) return;
     const fen = game.fen().split(' ');
     // chess.js returns FEN with halfmove/fullmove; our server expects 4 fields
     const shortFen = fen.slice(0, 4).join(' ');
+    const modeEl = document.getElementById('mode');
+    const mode = modeEl ? modeEl.value : 'prefer-book';
     try {
       const res = await fetch('/api/engine/move', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fen: shortFen }),
+        body: JSON.stringify({ fen: shortFen, mode }),
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'Engine error');
@@ -79,7 +169,12 @@ import { Chess } from '/vendor/chess-esm.js';
       const move = game.move({ from, to, promotion: promo || 'q' });
       if (move) {
         board.position(game.fen());
-        log('Engine: ' + move.san + ' (' + best + ')');
+  const src = data.source === 'book' ? 'Book' : data.source === 'db' ? 'DB' : 'Engine';
+  const parts = [];
+  if (data.bookCandidates != null) parts.push(`book=${data.bookCandidates}`);
+  if (data.dbHits != null) parts.push(`dbHits=${data.dbHits}`);
+  const extra = parts.length ? ` [${parts.join(', ')}]` : '';
+        log(src + ': ' + move.san + ' (' + best + ')' + extra);
         updateStatus();
       } else {
         log('Engine produced illegal move: ' + best);
@@ -102,6 +197,14 @@ import { Chess } from '/vendor/chess-esm.js';
 
   document.getElementById('btn-new').addEventListener('click', () => reset(humanIsWhite));
   document.getElementById('btn-switch').addEventListener('click', () => reset(!humanIsWhite));
+  document.getElementById('btn-fen').addEventListener('click', showFen);
+  document.getElementById('btn-search').addEventListener('click', searchPosition);
+  document.getElementById('btn-counters').addEventListener('click', listCountersLocal);
+  document.getElementById('btn-counters-db').addEventListener('click', async () => {
+    const counters = listCountersLocal();
+    await searchCountersInDB(counters);
+  });
+  document.getElementById('btn-play-db').addEventListener('click', playRandomDBCounter);
 
   const config = {
     draggable: true,

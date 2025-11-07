@@ -263,6 +263,11 @@ async function downloadAndIndex({ token, username, max, rated, perfType, minRati
   const out = fs.createWriteStream(outPath, { flags: 'w' });
   let posCount = 0;
 
+  // Per-run transitions (from -> move -> to) using FEN-4 keys for stability
+  const movesRunPath = path.join(dataDir, `${id}.moves.jsonl`);
+  const outMovesRun = fs.createWriteStream(movesRunPath, { flags: 'w' });
+  let transCount = 0;
+
   // Global incremental DB and index
   const globalDBPath = path.join(dataDir, 'global.jsonl');
   const globalIndexPath = path.join(dataDir, 'global.index'); // one sha1 per line
@@ -275,9 +280,22 @@ async function downloadAndIndex({ token, username, max, rated, perfType, minRati
   const globalOut = fs.createWriteStream(globalDBPath, { flags: 'a' });
   const globalIndexOut = fs.createWriteStream(globalIndexPath, { flags: 'a' });
   let globalAdded = 0;
+
+  // Global moves aggregate (simple JSON map: fen4 -> { total, moves: [{uci, to, count}] })
+  const globalMovesPath = path.join(dataDir, 'global.moves.json');
+  let globalMoves = {};
+  if (fs.existsSync(globalMovesPath)) {
+    try {
+      globalMoves = JSON.parse(fs.readFileSync(globalMovesPath, 'utf8')) || {};
+    } catch (_e) {
+      globalMoves = {};
+    }
+  }
   const stats = { variantSkip: 0, parseFail: 0, emptyMoves: 0, illegalReplay: 0, nonInitialFENSkip: 0 };
   for (const g of games) {
+    // Positions set for uniqueness and a replay sequence for transitions
     const fens = collectPositionsFromPGN(g, stats);
+    // Write unique positions
     for (const fen of fens) {
       if (seen.has(fen)) continue;
       seen.add(fen);
@@ -301,18 +319,132 @@ async function downloadAndIndex({ token, username, max, rated, perfType, minRati
         globalAdded++;
       }
     }
+
+    // Build transitions using a fresh replay to preserve move order
+    // Skip if parse failed earlier (signals: empty fens but parseFail may have incremented)
+    const { Chess } = require('chess.js');
+    const hdr = parseHeaders(g);
+    if (hdr && hdr.Variant && String(hdr.Variant).toLowerCase() !== 'standard') {
+      // already counted in stats earlier; continue
+    } else if (hdr && hdr.FEN) {
+      // We already enforced only initial FEN allowed; skip if not initial
+      const initial = new Chess();
+      if (toFourFieldFEN(String(hdr.FEN)) !== toFourFieldFEN(initial.fen())) {
+        // counted in stats
+      } else {
+        // Re-parse and replay moves for transitions
+        const base = new Chess();
+        try {
+          let ok = base.loadPgn(g, { sloppy: true });
+          if (!ok) {
+            const body = stripHeaders(g);
+            ok = base.loadPgn(body, { sloppy: true });
+          }
+          if (ok) {
+            const moves = base.history({ verbose: true });
+            const replay = new Chess();
+            // Initial key
+            let fromFen4 = toFourFieldFEN(replay.fen());
+            for (const m of moves) {
+              const uci = m.from + m.to + (m.promotion ? m.promotion : '');
+              const made = replay.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
+              if (!made) break;
+              const toFen4 = toFourFieldFEN(replay.fen());
+              const moveRec = {
+                from_fen: fromFen4,
+                move: uci,
+                to_fen: toFen4,
+              };
+              outMovesRun.write(JSON.stringify(moveRec) + '\n');
+              transCount++;
+
+              // Update global aggregate
+              const fromKey = fromFen4;
+              const toKey = toFen4;
+              if (!globalMoves[fromKey]) globalMoves[fromKey] = { total: 0, moves: [] };
+              const entry = globalMoves[fromKey];
+              let mv = entry.moves.find((x) => x.uci === uci && x.to === toKey);
+              if (!mv) {
+                mv = { uci, to: toKey, count: 0 };
+                entry.moves.push(mv);
+              }
+              mv.count += 1;
+              entry.total += 1;
+
+              // Advance fromEnc for next ply
+              fromFen4 = toFen4;
+            }
+          }
+        } catch (_e) {
+          // ignore transitions for this game
+        }
+      }
+    } else {
+      // No FEN header; treat like initial position
+      const base = new Chess();
+      try {
+        let ok = base.loadPgn(g, { sloppy: true });
+        if (!ok) {
+          const body = stripHeaders(g);
+          ok = base.loadPgn(body, { sloppy: true });
+        }
+        if (ok) {
+          const moves = base.history({ verbose: true });
+          const replay = new Chess();
+          let fromFen4 = toFourFieldFEN(replay.fen());
+          for (const m of moves) {
+            const uci = m.from + m.to + (m.promotion ? m.promotion : '');
+            const made = replay.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
+            if (!made) break;
+            const toFen4 = toFourFieldFEN(replay.fen());
+            const moveRec = {
+              from_fen: fromFen4,
+              move: uci,
+              to_fen: toFen4,
+            };
+            outMovesRun.write(JSON.stringify(moveRec) + '\n');
+            transCount++;
+
+            const fromKey = fromFen4;
+            const toKey = toFen4;
+            if (!globalMoves[fromKey]) globalMoves[fromKey] = { total: 0, moves: [] };
+            const entry = globalMoves[fromKey];
+            let mv = entry.moves.find((x) => x.uci === uci && x.to === toKey);
+            if (!mv) {
+              mv = { uci, to: toKey, count: 0 };
+              entry.moves.push(mv);
+            }
+            mv.count += 1;
+            entry.total += 1;
+
+            fromFen4 = toFen4;
+          }
+        }
+      } catch (_e) {
+        // ignore
+      }
+    }
   }
   out.end();
   globalOut.end();
   globalIndexOut.end();
+  outMovesRun.end();
+  // Persist global moves aggregate
+  try {
+    fs.writeFileSync(globalMovesPath, JSON.stringify(globalMoves), 'utf8');
+  } catch (_e) {
+    // ignore write failure of global moves aggregate
+  }
 
   return {
     ok: true,
     cacheId: id,
     pgnPath,
     outPath,
+    movesRunPath,
     games: games.length,
     positions: posCount,
+    transitions: transCount,
     globalAdded,
     stats,
   };

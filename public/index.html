@@ -27,6 +27,21 @@
       <div class="panel controls">
         <button id="btn-new">New Game</button>
         <button id="btn-switch">Switch Sides</button>
+        <label style="margin-left:12px">Move source:
+          <select id="mode">
+            <option value="prefer-db" selected>Prefer DB</option>
+            <option value="db-only">DB Only</option>
+            <option value="prefer-book">Prefer Book</option>
+            <option value="book-only">Book Only</option>
+            <option value="engine-only">Engine Only</option>
+          </select>
+        </label>
+        <div style="margin-top:8px"></div>
+        <button id="btn-fen">Show FEN</button>
+        <button id="btn-search">Search Position</button>
+        <button id="btn-counters">List Counters</button>
+        <button id="btn-counters-db">Search Counters in DB</button>
+        <button id="btn-play-db">Play Random DB Counter</button>
         <span class="status" id="status">Ready</span>
       </div>
     </div>
