@@ -32,6 +32,14 @@ form.addEventListener('submit', async (e) => {
     if (typeof data.globalAdded === 'number') {
       log('New positions added to global DB: ' + data.globalAdded);
     }
+    if (data.stats) {
+      const s = data.stats;
+      log(`Skipped (variant): ${s.variantSkip || 0}`);
+      log(`Skipped (non-initial FEN): ${s.nonInitialFENSkip || 0}`);
+      log(`Parse failures: ${s.parseFail || 0}`);
+      log(`Games with 0 moves: ${s.emptyMoves || 0}`);
+      log(`Illegal on replay: ${s.illegalReplay || 0}`);
+    }
     log('PGN cache: ' + data.pgnPath);
     log('Positions DB: ' + data.outPath);
   } catch (err) {

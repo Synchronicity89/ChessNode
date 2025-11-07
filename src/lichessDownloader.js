@@ -23,7 +23,60 @@ function toFourFieldFEN(fullFen) {
   return parts.slice(0, 4).join(' ');
 }
 
-async function fetchPGNFromLichess({ token, username, max = 100, rated = true, perfType, minRating }) {
+function parseHeaders(pgn) {
+  // Parse bracketed PGN headers at the start of the game
+  // Example: [Variant "Standard"]\n[SetUp "1"]\n[FEN "rnbqkbnr/..."]
+  const headers = {};
+  const lines = pgn.split(/\r?\n/);
+  for (const line of lines) {
+    const s = line.trim();
+    if (s === '') break; // blank line ends header section
+    if (!s.startsWith('[')) continue;
+    const m = s.match(/^\[(\w+)\s+"([^"]*)"\]$/);
+    if (m) {
+      headers[m[1]] = m[2];
+    }
+  }
+  return headers;
+}
+
+function stripHeaders(pgn) {
+  // Remove lines that look like [Tag "Value"] and return the remaining PGN body (moves, comments, result)
+  return pgn
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*\[/.test(line))
+    .join('\n')
+    .trim();
+}
+
+function manualExtractFensFromMoves(pgnBody) {
+  const { Chess } = require('chess.js');
+  // Remove comments {...}, line comments starting with ;, NAGs $.., and simple () variations
+  let t = pgnBody
+    .replace(/\{[^}]*\}/g, ' ') // {...}
+    .replace(/;[^\n]*/g, ' ') // ; to EOL
+    .replace(/\([^)]*\)/g, ' ') // ( ... ) variations
+    .replace(/\$\d+/g, ' ') // $1, $2
+    .replace(/\r?\n/g, ' ');
+  // Remove move numbers like 1. or 23... and results
+  t = t.replace(/\d+\.\.\.|\d+\./g, ' ');
+  t = t.replace(/\b(1-0|0-1|1\/2-1\/2|\*)\b/g, ' ');
+  const tokens = t.split(/\s+/).filter(Boolean);
+  const ref = new Chess();
+  const fens = new Set();
+  fens.add(toFourFieldFEN(ref.fen()));
+  for (const san of tokens) {
+    const mv = ref.move(san);
+    if (!mv) {
+      // Give up on manual if we encounter an illegal SAN
+      return [];
+    }
+    fens.add(toFourFieldFEN(ref.fen()));
+  }
+  return Array.from(fens);
+}
+
+async function fetchPGNFromLichess({ token, username, max = 100, rated = true, perfType, minRating, variant = 'standard' }) {
   if (!token) throw new Error('Missing Lichess API token');
   if (!username) throw new Error('username is required for this initial implementation');
   const url = new URL(`https://lichess.org/api/games/user/${encodeURIComponent(username)}`);
@@ -37,6 +90,7 @@ async function fetchPGNFromLichess({ token, username, max = 100, rated = true, p
   if (rated !== undefined) url.searchParams.set('rated', rated ? 'true' : 'false');
   if (perfType) url.searchParams.set('perfType', perfType); // blitz, rapid, classical, etc.
   if (minRating) url.searchParams.set('minRating', String(minRating));
+  if (variant) url.searchParams.set('variant', variant); // enforce standard by default
 
   const res = await fetch(url, {
     headers: {
@@ -54,49 +108,119 @@ function splitPGNGames(pgnAll) {
   return parts.map(s => s.trim()).filter(Boolean);
 }
 
-function* iteratePositionsFromPGN(pgn) {
+function* iteratePositionsFromPGN(pgn, stats) {
   // Unused by the pipeline at the moment; keep a defensive iterator if needed later
   const { Chess } = require('chess.js');
-  const game = new Chess();
-  try {
-    const ok = game.loadPgn(pgn, { sloppy: true });
-    if (!ok) return; // skip malformed
-  } catch (_e) {
-    // Some PGNs (variants/buggy) can throw from chess.js parser; skip
+  const hdr = parseHeaders(pgn);
+  // Strict filter: only Variant "Standard"
+  if (hdr && hdr.Variant && String(hdr.Variant).toLowerCase() !== 'standard') {
+    if (stats) stats.variantSkip++;
     return;
   }
-  const headers = typeof game.header === 'function' ? game.header() : {};
-  if (headers && headers.Variant && headers.Variant.toLowerCase() !== 'standard') return; // skip non-standard variants
-  const startFen = headers && headers.SetUp === '1' && headers.FEN ? headers.FEN : undefined;
+  // If FEN header provided, it must equal initial position
+  if (hdr && hdr.FEN) {
+    const initial = new Chess();
+    const initialFour = toFourFieldFEN(initial.fen());
+    const fenFour = toFourFieldFEN(String(hdr.FEN));
+    if (fenFour !== initialFour) {
+      if (stats) stats.nonInitialFENSkip++;
+      return;
+    }
+  }
+  const game = new Chess();
+  try {
+    let ok = game.loadPgn(pgn, { sloppy: true });
+    if (!ok) {
+      // Fallback: try parsing only the moves section without headers
+      const body = stripHeaders(pgn);
+      ok = game.loadPgn(body, { sloppy: true });
+      if (!ok) {
+        // Last resort: manual SAN extraction
+        const fens = manualExtractFensFromMoves(body);
+        if (fens.length === 0) {
+          if (stats) stats.parseFail++;
+          return;
+        }
+        // Yield from manual path
+        for (const fen of fens) yield fen;
+        return;
+      }
+    }
+  } catch (_e) {
+    // Some PGNs (variants/buggy) can throw from chess.js parser; try manual path
+    const body = stripHeaders(pgn);
+    const fens = manualExtractFensFromMoves(body);
+    if (fens.length === 0) {
+      if (stats) stats.parseFail++;
+      return;
+    }
+    for (const fen of fens) yield fen;
+    return;
+  }
+  const startFen = hdr && hdr.SetUp === '1' && hdr.FEN ? hdr.FEN : undefined;
   const replay = new Chess(startFen);
 
   // Start position
   yield toFourFieldFEN(replay.fen());
   // Replay and yield each position
   const moves = game.history({ verbose: true });
+  if (!moves || moves.length === 0) {
+    if (stats) stats.emptyMoves++;
+  }
   for (const m of moves) {
     const mv = replay.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
-    if (!mv) break; // stop if something doesn't apply cleanly under start FEN
+    if (!mv) {
+      if (stats) stats.illegalReplay++;
+      break; // stop if something doesn't apply cleanly under start FEN
+    }
     yield toFourFieldFEN(replay.fen());
   }
 }
 
-function collectPositionsFromPGN(pgn) {
+function collectPositionsFromPGN(pgn, stats) {
   const { Chess } = require('chess.js');
-  const game = new Chess();
-  try {
-    const ok = game.loadPgn(pgn, { sloppy: true });
-    if (!ok) return [];
-  } catch (_e) {
-    // Parser rejected this PGN (often due to variant or malformed SAN); skip this game
+  const hdr = parseHeaders(pgn);
+  // Strict filter: only Variant "Standard"
+  if (hdr && hdr.Variant && String(hdr.Variant).toLowerCase() !== 'standard') {
+    if (stats) stats.variantSkip++;
     return [];
   }
-  const headers = typeof game.header === 'function' ? game.header() : {};
-  // Skip non-standard variants (e.g., Chess960, Crazyhouse) — chess.js standard parser can't always handle them
-  if (headers && headers.Variant && headers.Variant.toLowerCase() !== 'standard') return [];
-
+  // If FEN header provided, it must equal initial position
+  if (hdr && hdr.FEN) {
+    const initial = new Chess();
+    const initialFour = toFourFieldFEN(initial.fen());
+    const fenFour = toFourFieldFEN(String(hdr.FEN));
+    if (fenFour !== initialFour) {
+      if (stats) stats.nonInitialFENSkip++;
+      return [];
+    }
+  }
+  const game = new Chess();
+  try {
+    let ok = game.loadPgn(pgn, { sloppy: true });
+    if (!ok) {
+      const body = stripHeaders(pgn);
+      ok = game.loadPgn(body, { sloppy: true });
+      if (!ok) {
+        const fensManual = manualExtractFensFromMoves(body);
+        if (fensManual.length === 0) {
+          if (stats) stats.parseFail++;
+          return [];
+        }
+        return fensManual;
+      }
+    }
+  } catch (_e) {
+    const body = stripHeaders(pgn);
+    const fensManual = manualExtractFensFromMoves(body);
+    if (fensManual.length === 0) {
+      if (stats) stats.parseFail++;
+      return [];
+    }
+    return fensManual;
+  }
   // Determine start position: FEN header is used when SetUp==1; otherwise standard start
-  const startFen = headers && headers.SetUp === '1' && headers.FEN ? headers.FEN : undefined;
+  const startFen = hdr && hdr.SetUp === '1' && hdr.FEN ? hdr.FEN : undefined;
   const replay = new Chess(startFen);
 
   const fens = new Set();
@@ -104,10 +228,14 @@ function collectPositionsFromPGN(pgn) {
   fens.add(toFourFieldFEN(replay.fen()));
   // Replay moves capturing positions after each ply
   const moves = game.history({ verbose: true });
+  if (!moves || moves.length === 0) {
+    if (stats) stats.emptyMoves++;
+  }
   for (const m of moves) {
     const mv = replay.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
     if (!mv) {
       // If a move can't be applied under this start position, bail on this game
+      if (stats) stats.illegalReplay++;
       break;
     }
     fens.add(toFourFieldFEN(replay.fen()));
@@ -115,7 +243,7 @@ function collectPositionsFromPGN(pgn) {
   return Array.from(fens);
 }
 
-async function downloadAndIndex({ token, username, max, rated, perfType, minRating }) {
+async function downloadAndIndex({ token, username, max, rated, perfType, minRating, variant = 'standard' }) {
   const criteria = { username, max, rated, perfType, minRating };
   const id = hashCriteria(criteria);
   const cacheDir = path.resolve(__dirname, '..', 'cache', 'lichess', id);
@@ -125,7 +253,7 @@ async function downloadAndIndex({ token, username, max, rated, perfType, minRati
   const pgnPath = path.join(cacheDir, 'games.pgn');
 
   // Fetch PGN
-  const pgn = await fetchPGNFromLichess({ token, username, max, rated, perfType, minRating });
+  const pgn = await fetchPGNFromLichess({ token, username, max, rated, perfType, minRating, variant });
   fs.writeFileSync(pgnPath, pgn, 'utf8');
 
   // Parse and index
@@ -147,8 +275,9 @@ async function downloadAndIndex({ token, username, max, rated, perfType, minRati
   const globalOut = fs.createWriteStream(globalDBPath, { flags: 'a' });
   const globalIndexOut = fs.createWriteStream(globalIndexPath, { flags: 'a' });
   let globalAdded = 0;
+  const stats = { variantSkip: 0, parseFail: 0, emptyMoves: 0, illegalReplay: 0, nonInitialFENSkip: 0 };
   for (const g of games) {
-    const fens = collectPositionsFromPGN(g);
+    const fens = collectPositionsFromPGN(g, stats);
     for (const fen of fens) {
       if (seen.has(fen)) continue;
       seen.add(fen);
@@ -185,7 +314,14 @@ async function downloadAndIndex({ token, username, max, rated, perfType, minRati
     games: games.length,
     positions: posCount,
     globalAdded,
+    stats,
   };
 }
 
-module.exports = { downloadAndIndex };
+function extractPositionsFromPGN(pgn) {
+  const stats = { variantSkip: 0, parseFail: 0, emptyMoves: 0, illegalReplay: 0, nonInitialFENSkip: 0 };
+  const fens = collectPositionsFromPGN(pgn, stats);
+  return { fens, stats };
+}
+
+module.exports = { downloadAndIndex, extractPositionsFromPGN };
