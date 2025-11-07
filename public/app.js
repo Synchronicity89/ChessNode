@@ -153,12 +153,14 @@ import { Chess } from '/vendor/chess-esm.js';
     // chess.js returns FEN with halfmove/fullmove; our server expects 4 fields
     const shortFen = fen.slice(0, 4).join(' ');
     const modeEl = document.getElementById('mode');
-    const mode = modeEl ? modeEl.value : 'prefer-book';
+    const mode = modeEl ? modeEl.value : 'prefer-db';
+    const pliesEl = document.getElementById('plies');
+    const plies = pliesEl ? Math.max(1, Math.min(6, parseInt(pliesEl.value || '2', 10))) : 2;
     try {
       const res = await fetch('/api/engine/move', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fen: shortFen, mode }),
+        body: JSON.stringify({ fen: shortFen, mode, plies }),
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'Engine error');
@@ -170,9 +172,11 @@ import { Chess } from '/vendor/chess-esm.js';
       if (move) {
         board.position(game.fen());
   const src = data.source === 'book' ? 'Book' : data.source === 'db' ? 'DB' : 'Engine';
-  const parts = [];
+        const parts = [];
   if (data.bookCandidates != null) parts.push(`book=${data.bookCandidates}`);
   if (data.dbHits != null) parts.push(`dbHits=${data.dbHits}`);
+        if (data.depth != null) parts.push(`d=${data.depth}`);
+        if (data.score != null) parts.push(`score=${data.score}`);
   const extra = parts.length ? ` [${parts.join(', ')}]` : '';
         log(src + ': ' + move.san + ' (' + best + ')' + extra);
         updateStatus();

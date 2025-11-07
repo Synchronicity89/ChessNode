@@ -49,15 +49,106 @@ async function main() {
     return parts.length >= 6 ? f4 : `${parts[0]} ${parts[1]} ${parts[2]} ${parts[3]} 0 1`;
   }
 
+  // Material evaluation with pawn advancement bonus up to 3 (near promotion)
+  function evaluateMaterial(fen4) {
+    const { Chess } = require('chess.js');
+    const chess = new Chess(ensureSix(fen4));
+    const board = chess.board(); // array[8][8] from 8th rank to 1st
+    let white = 0;
+    let black = 0;
+    const pieceVals = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
+    function pawnValue(square, color) {
+      // Base 1, up to 3 when one step from promotion; scale linearly by advancement
+      // square like {square:'e4', type:'p', color:'w'}
+      const file = square.square[0];
+      const rank = parseInt(square.square[1], 10); // 1..8
+      let adv = 0; // 0..5
+      if (color === 'w') adv = Math.max(0, Math.min(5, rank - 2));
+      else adv = Math.max(0, Math.min(5, 7 - rank));
+      const val = 1 + (2 * adv) / 5; // 1..3
+      return val;
+    }
+    for (const row of board) {
+      for (const sq of row) {
+        if (!sq) continue;
+        const t = sq.type; // 'p','n','b','r','q','k'
+        const c = sq.color; // 'w' or 'b'
+        let v = 0;
+        if (t === 'p') v = pawnValue(sq, c);
+        else v = pieceVals[t] || 0;
+        if (c === 'w') white += v; else black += v;
+      }
+    }
+    // Return evaluation from White perspective
+    // We'll use negamax to account for side to move
+    return Math.round((white - black) * 100) / 100; // keep two decimals
+  }
+
+  function listLegalChildren(fen4) {
+    const { Chess } = require('chess.js');
+    const base = new Chess(ensureSix(fen4));
+    const legal = base.moves({ verbose: true });
+    const children = [];
+    for (const m of legal) {
+      const tmp = new Chess(ensureSix(fen4));
+      const made = tmp.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
+      if (!made) continue;
+      const childFen4 = tmp.fen().split(' ').slice(0, 4).join(' ');
+      const uci = m.from + m.to + (m.promotion || '');
+      // Pre-score to help ordering (material eval)
+      const pre = evaluateMaterial(childFen4);
+      const isCapture = !!(made.captured) || (made.flags && made.flags.includes('c'));
+      children.push({ uci, fen4: childFen4, pre, isCapture });
+    }
+    // Order best-first to improve pruning behavior when we add alpha-beta (future)
+    children.sort((a, b) => b.pre - a.pre);
+    return children;
+  }
+
+  function negamax(fen4, depth, captureParity = 0) {
+    const { Chess } = require('chess.js');
+    const chess = new Chess(ensureSix(fen4));
+    if (depth <= 0) {
+      // Quiescence-like extension: if odd-length capture sequence, extend one more ply
+      if (captureParity % 2 === 1) {
+        depth = 1;
+      } else {
+        return { score: evaluateMaterial(fen4), best: null, explored: 1 };
+      }
+    }
+    if (chess.isCheckmate()) return { score: -100000, best: null, explored: 1 };
+    if (chess.isDraw()) return { score: 0, best: null, explored: 1 };
+
+    const children = listLegalChildren(fen4);
+    if (children.length === 0) return { score: evaluateMaterial(fen4), best: null, explored: 1 };
+    let bestScore = -Infinity;
+    let bestMove = null;
+    let explored = 1;
+    // Limit branching modestly for depth>2
+    const maxBranch = depth > 2 ? 12 : 20;
+    const slice = children.slice(0, maxBranch);
+    for (const child of slice) {
+      const r = negamax(child.fen4, depth - 1, child.isCapture ? (captureParity + 1) : 0);
+      const s = -r.score;
+      explored += r.explored;
+      if (s > bestScore) {
+        bestScore = s;
+        bestMove = child.uci;
+      }
+    }
+    return { score: bestScore, best: bestMove, explored };
+  }
+
   app.post('/api/engine/move', async (req, res) => {
     try {
-      const { fen, mode } = req.body || {};
+      const { fen, mode, plies } = req.body || {};
       if (!fen) return res.status(400).json({ ok: false, error: 'missing fen' });
       const modeEff = typeof mode === 'string' ? mode : 'prefer-db';
+      const depth = Math.max(1, Math.min(6, parseInt(plies || '2', 10)));
       let bookCandidates = null;
       let dbHits = null;
 
-      // prefer-db or db-only
+      // prefer-db or db-only: try DB first; material search used only if no DB and no book (or engine-only)
       if (modeEff !== 'engine-only' && modeEff !== 'prefer-book' && modeEff !== 'book-only') {
         const { Chess } = require('chess.js');
         const base = new Chess(ensureSix(fen));
@@ -73,7 +164,7 @@ async function main() {
         dbHits = pool.length;
         if (pool.length > 0) {
           const dbPick = pool[Math.floor(Math.random() * pool.length)];
-          return res.json({ ok: true, bestmove: dbPick, source: 'db', dbHits });
+          return res.json({ ok: true, bestmove: dbPick, source: 'db', dbHits, depth: 1 });
         }
         // if db-only, fall through to try book then engine for better UX
       }
@@ -89,6 +180,11 @@ async function main() {
         }
       }
 
+      // No DB and no Book or engine-only: run material search (plies depth)
+      if (depth > 0) {
+        const r = negamax(fen, depth);
+        if (r.best) return res.json({ ok: true, bestmove: r.best, source: 'engine-search', depth, score: r.score });
+      }
       // Fallback to engine
       await engine.setPositionFen(fen);
       const bestmove = await engine.go();
