@@ -310,6 +310,21 @@ async function main() {
     };
   }
   let nextReqId = 1;
+  function adjustBudget(baseBudget, depth) {
+    // Adaptive time allocation using session-wide average NPS.
+    const avgNps = sessionStats.totalMs > 0 ? (sessionStats.totalNodes / sessionStats.totalMs) * 1000 : 0;
+    let budget = baseBudget;
+    if (avgNps > 0) {
+      if (avgNps < 150) budget = Math.floor(budget * 1.35); // slow searches, grant more time
+      else if (avgNps < 300) budget = Math.floor(budget * 1.18);
+      else if (avgNps > 900) budget = Math.floor(budget * 0.90); // very fast, trim a bit
+      else if (avgNps > 1300) budget = Math.floor(budget * 0.80);
+    }
+    // Slight depth-based additive cushion
+    budget += depth * 150;
+    return budget;
+  }
+
   function searchParallel(fen4, depth, verbose, maxTimeMs) {
     return new Promise((resolve) => {
       const id = nextReqId++;
@@ -391,8 +406,15 @@ async function main() {
       if (depth > 0) {
         if (depth > 3) {
           // Provide worker its own time budget slightly below external timeout
-          const workerBudget = (process.env.SEARCH_WORKER_BUDGET_MS ? Number(process.env.SEARCH_WORKER_BUDGET_MS) : 0) || (8000 + depth * 700);
-          const r = await searchParallel(fen, depth, verbose, workerBudget);
+          let baseBudget = (process.env.SEARCH_WORKER_BUDGET_MS ? Number(process.env.SEARCH_WORKER_BUDGET_MS) : 0) || (8000 + depth * 700);
+          let workerBudget = adjustBudget(baseBudget, depth);
+          let r = await searchParallel(fen, depth, verbose, workerBudget);
+          // If worker aborted before completing any iteration, retry once with increased budget
+          if ((r && r.ok && !r.best && r.abortedEarly) || (r && r.ok && !r.best && (r.depthReached||0) === 0)) {
+            if (verbose) console.log(`Parallel search aborted early at depth=${depth} with budget=${workerBudget}ms; retrying with x2 budget.`);
+            workerBudget = Math.floor(workerBudget * 2);
+            r = await searchParallel(fen, depth, verbose, workerBudget);
+          }
           if (r.ok && r.best) {
             if (verbose) console.log(`Search iter depthReached=${r.depthReached||'?'} target=${depth} nodes=${r.nodes} score=${r.score}`);
             // store in cache
@@ -421,22 +443,26 @@ async function main() {
               nullTries: r.nullTries,
               nullCutoffs: r.nullCutoffs,
               nullCutRate: (r.nullTries > 0) ? +(r.nullCutoffs / r.nullTries * 100).toFixed(1) : null,
+              mateDistance: r.mateDistance != null ? r.mateDistance : null,
               sessionTotals: makeSessionTotals(),
               recentSearches: sessionStats.recent
             };
             if (r.bestLines) payload.bestLines = r.bestLines;
             if (r.worstLines) payload.worstLines = r.worstLines;
-            if (r.depthReached && r.depthReached < depth) payload.explanation = verbose ? `Iterative deepening stopped early at depth ${r.depthReached}` : undefined;
+            if (r.depthReached && r.depthReached < depth) payload.explanation = `Iterative deepening stopped early at depth ${r.depthReached}`;
             return res.json(payload);
           }
           if (verbose && r && r.error === 'timeout') {
             console.log(`Search timeout after ${r.timeoutMs}ms at depth=${depth}; falling back to shallow search.`);
           }
+          if (r && r.ok && !r.best && r.abortedEarly && verbose) {
+            console.log(`Parallel search aborted early twice at depth=${depth}; falling back to shallow search.`);
+          }
         }
         const r = negamax(fen, Math.min(depth, 3));
         if (r.best) {
           cacheSet(fen4, { bestmove: r.best, score: r.score, nodes: r.explored, depth: Math.min(depth, 3) });
-          return res.json({ ok: true, bestmove: r.best, source: 'engine-search', depth: Math.min(depth, 3), requestedDepth: depth, score: r.score, nodes: r.explored, explanation: verbose ? 'Depth limited fallback search (<=3) used; multi-PV not generated.' : undefined, ms: null, nps: null, fhCount: null, flCount: null, ttHits: null, ttHitRate: null, sessionTotals: makeSessionTotals(), recentSearches: sessionStats.recent });
+          return res.json({ ok: true, bestmove: r.best, source: 'engine-search', depth: Math.min(depth, 3), requestedDepth: depth, score: r.score, nodes: r.explored, mateDistance: r.mateDistance || null, explanation: 'Depth limited fallback search (<=3) used; multi-PV not generated (parallel search timed out or aborted early).', ms: null, nps: null, fhCount: null, flCount: null, ttHits: null, ttHitRate: null, sessionTotals: makeSessionTotals(), recentSearches: sessionStats.recent });
         }
       }
       // Fallback to engine

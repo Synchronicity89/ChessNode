@@ -37,6 +37,7 @@ import { Chess } from '/vendor/chess-esm.js';
         nullTries,
         nullCutoffs,
         nullCutRate,
+        mateDistance,
         sessionTotals,
         recentSearches,
         failReason,
@@ -49,6 +50,7 @@ import { Chess } from '/vendor/chess-esm.js';
       if (nodes != null) lineParts.push(`nodes: ${nodes}`);
       if (ms != null) lineParts.push(`time(ms): ${ms}`);
       if (nps != null) lineParts.push(`nps: ${nps}`);
+  if (mateDistance != null) lineParts.push(`mateDistance: ${mateDistance}`);
       if (fhCount != null) lineParts.push(`failHighs: ${fhCount}`);
       if (flCount != null) lineParts.push(`failLows: ${flCount}`);
         if (ttHits != null) lineParts.push(`ttHits: ${ttHits}`);

@@ -171,6 +171,10 @@ function sharedHintSet(zHash, movePack, depth) {
 
 // Enhanced evaluation: material baseline + mobility + center control + simple king safety
 function evaluateMaterial(fen4) {
+  // Simple per-search evaluation memo (cleared between root iterations elsewhere if desired)
+  if (!evaluateMaterial.cache) evaluateMaterial.cache = new Map();
+  const cached = evaluateMaterial.cache.get(fen4);
+  if (cached !== undefined) return cached;
   const F = ensureSix(fen4);
   const chessW = new Chess(F);
   const board = chessW.board();
@@ -243,12 +247,345 @@ function evaluateMaterial(fen4) {
   if (!hasPiece('f7','p','b')) score += 0.5;
   if (!hasPiece('g7','p','b')) score += 0.3;
 
+  // Additional king safety: attack ring pressure and open file exposure
+  function kingRingSquares(ksq) {
+    if (!ksq) return [];
+    const file = ksq[0];
+    const rank = parseInt(ksq[1], 10);
+    const files = [String.fromCharCode(file.charCodeAt(0)-1), file, String.fromCharCode(file.charCodeAt(0)+1)];
+    const ranks = [rank-1, rank, rank+1];
+    const out = [];
+    for (const f of files) for (const r of ranks) {
+      if (f < 'a' || f > 'h' || r < 1 || r > 8) continue;
+      const sq = f + r;
+      if (sq !== ksq) out.push(sq);
+    }
+    return out;
+  }
+  const wRing = kingRingSquares(wKing);
+  const bRing = kingRingSquares(bKing);
+  // Count enemy attacks on king ring squares (approx by generating enemy moves)
+  function countAttacksOn(squares, enemyMoves) {
+    let c = 0;
+    const set = new Set(squares);
+    for (const m of enemyMoves) if (set.has(m.to)) c++;
+    return c;
+  }
+  // Generate black moves (attacks on white) and white moves (attacks on black)
+  function flipSideRaw(f4, side) { const p = f4.split(/\s+/); return `${p[0]} ${side} ${p[2]} -`; }
+  const chessBlackToMove = new Chess(ensureSix(flipSideRaw(fen4,'b')));
+  const blackMoves = chessBlackToMove.moves({ verbose: true });
+  const chessWhiteToMove = new Chess(ensureSix(flipSideRaw(fen4,'w')));
+  const whiteMoves = chessWhiteToMove.moves({ verbose: true });
+  const wPressure = countAttacksOn(wRing, blackMoves);
+  const bPressure = countAttacksOn(bRing, whiteMoves);
+  // Pressure scaling: each attack ~0.08 pawns
+  score += (bPressure - wPressure) * 0.08;
+  // Open file exposure: penalize if king file has no friendly pawns at any rank
+  function fileHasPawn(color, fileChar) {
+    for (const row of board) for (const sq of row) if (sq && sq.color === color && sq.type === 'p' && sq.square[0] === fileChar) return true;
+    return false;
+  }
+  if (wKing && !fileHasPawn('w', wKing[0])) score -= 0.35;
+  if (bKing && !fileHasPawn('b', bKing[0])) score += 0.35;
+  // Bonus if enemy king file open (attack prospects)
+  if (bKing && !fileHasPawn('b', bKing[0])) score += 0.15;
+  if (wKing && !fileHasPawn('w', wKing[0])) score -= 0.15;
+
+  // Castling rights progressive penalty system (approximation without full move history)
+  // Rules (requested):
+
+  // -----------------------------
+  // Positional heuristics (lightweight)
+  // -----------------------------
+  // Helpers
+  function fileIdx(ch) { return ch.charCodeAt(0) - 97; }
+  function rankIdx(ch) { return parseInt(ch, 10) - 1; }
+  function get(square) {
+    for (const row of board) for (const sq of row) if (sq && sq.square === square) return sq;
+    return null;
+  }
+  function isEmpty(square) { return !get(square); }
+  function betweenEmptyRank(rank, fromFile, toFile, color) {
+    // check emptiness between two files on a given rank (inclusive bounds skipped)
+    const start = Math.min(fromFile, toFile) + 1;
+    const end = Math.max(fromFile, toFile) - 1;
+    for (let f = start; f <= end; f++) {
+      const sq = String.fromCharCode(97 + f) + (rank + 1);
+      if (!isEmpty(sq)) return false;
+    }
+    return true;
+  }
+
+  // Knight centralization and rim penalties
+  const center4 = new Set(['d4','e4','d5','e5']);
+  const nearCenter = new Set(['c3','f3','c6','f6','c4','f4','c5','f5','d3','e3','d6','e6']);
+  function knightPositional() {
+    let s = 0;
+    for (const row of board) for (const sq of row) if (sq && sq.type==='n') {
+      const me = (sq.color==='w');
+      const sign = me ? 1 : -1;
+      const square = sq.square;
+      const f = square[0], r = square[1];
+      if (center4.has(square)) s += 0.2 * sign;
+      else if (nearCenter.has(square)) s += 0.1 * sign;
+      // Rim files a/h
+      if (f === 'a' || f === 'h') s += -0.15 * sign;
+      // Back/front ranks
+      if ((me && r==='1') || (!me && r==='8')) s += -0.1 * sign;
+    }
+    return s;
+  }
+  score += knightPositional();
+
+  // Minor piece development (very light): penalize undeveloped back-rank minors
+  function minorDevelopment() {
+    let s = 0;
+    const starts = [
+      { sq: 'b1', t: 'n', c: 'w' }, { sq: 'g1', t: 'n', c: 'w' }, { sq: 'c1', t: 'b', c: 'w' }, { sq: 'f1', t: 'b', c: 'w' },
+      { sq: 'b8', t: 'n', c: 'b' }, { sq: 'g8', t: 'n', c: 'b' }, { sq: 'c8', t: 'b', c: 'b' }, { sq: 'f8', t: 'b', c: 'b' },
+    ];
+    for (const st of starts) {
+      const piece = get(st.sq);
+      if (piece && piece.type === st.t && piece.color === st.c) {
+        s += (st.c==='w' ? -0.05 : 0.05);
+      }
+    }
+    return s;
+  }
+  score += minorDevelopment();
+
+  // Rook connection on back rank: no pieces between rooks
+  function rookConnection() {
+    function side(color) {
+      const rank = color==='w' ? 0 : 7;
+      const rooks = [];
+      for (let f=0; f<8; f++) {
+        const sq = String.fromCharCode(97+f) + (rank+1);
+        const p = get(sq);
+        if (p && p.type==='r' && p.color===color) rooks.push(f);
+      }
+      if (rooks.length < 2) return 0;
+      rooks.sort((a,b)=>a-b);
+      const connected = betweenEmptyRank(rank, rooks[0], rooks[rooks.length-1]);
+      return connected ? 0.2 : 0;
+    }
+    return side('w') - side('b');
+  }
+  score += rookConnection();
+
+  // Rook centralization and alignment with enemy K/Q (lightweight, not checking X-ray attackers)
+  function rookPositional() {
+      let s = 0;
+      function side(color) {
+        const add = (sq) => { s += (color==='w' ? 1 : -1) * sq; };
+        const enemyKing = color==='w' ? bKing : wKing;
+        const enemyQueen = (function(){ for(const row of board) for(const x of row) if(x && x.type==='q' && x.color!==(color)) return x.square; return null; })();
+        for (const row of board) for (const sq of row) if (sq && sq.type==='r' && sq.color===color) {
+          const f = sq.square[0];
+          const r = parseInt(sq.square[1],10);
+          if (f==='d' || f==='e') add(0.1);
+          if (r>=3 && r<=6) add(0.05);
+          // Alignment with enemy K/Q on same file or rank with few blockers (<=2)
+          function blockersBetween(a, b) {
+            if (!a || !b) return 99;
+            const af = fileIdx(a[0]), ar = rankIdx(a[1]);
+            const bf = fileIdx(b[0]), br = rankIdx(b[1]);
+            let count = 0;
+            if (af === bf) {
+              const step = ar < br ? 1 : -1;
+              for (let rr = ar + step; rr !== br; rr += step) {
+                const sq2 = String.fromCharCode(97+af) + (rr+1);
+                if (!isEmpty(sq2)) count++;
+              }
+            } else if (ar === br) {
+              const step = af < bf ? 1 : -1;
+              for (let ff = af + step; ff !== bf; ff += step) {
+                const sq2 = String.fromCharCode(97+ff) + (ar+1);
+                if (!isEmpty(sq2)) count++;
+              }
+            } else {
+              return 99;
+            }
+            return count;
+          }
+          const rookSq = sq.square;
+          if (blockersBetween(rookSq, enemyKing) <= 2) add(0.05);
+          if (blockersBetween(rookSq, enemyQueen) <= 2) add(0.05);
+        }
+      }
+      side('w'); side('b');
+      return s;
+  }
+  score += rookPositional();
+
+  // Simple knight outposts: knight supported by pawn and not attackable by enemy pawns on adjacent files
+  function knightOutposts() {
+    let s = 0;
+    function side(color) {
+      const forward = color==='w' ? 1 : -1;
+      const enemy = color==='w' ? 'b' : 'w';
+      for (const row of board) for (const sq of row) if (sq && sq.type==='n' && sq.color===color) {
+        const f = fileIdx(sq.square[0]);
+        const r = rankIdx(sq.square[1]);
+        // require support by own pawn one rank behind on same file
+        const supportSq = String.fromCharCode(97+f) + (r + 1 - forward);
+        const support = get(supportSq);
+        if (!support || support.type!=='p' || support.color!==color) continue;
+        // check enemy pawns on adjacent files in front that could attack
+        let threatened = false;
+        for (const df of [-1, 1]) {
+          const ef = f + df;
+          if (ef < 0 || ef > 7) continue;
+          for (let rr = r + 1; rr >=0 && rr <=7; rr += forward) {
+            const ahead = String.fromCharCode(97+ef) + (rr+1);
+            const p = get(ahead);
+            if (p && p.type==='p' && p.color===enemy) { threatened = true; break; }
+          }
+          if (threatened) break;
+        }
+        if (!threatened) s += (color==='w' ? 0.2 : -0.2);
+      }
+    }
+    side('w'); side('b');
+    return s;
+  }
+  score += knightOutposts();
+
+  // Bishop controlling enemy knight squares (lightweight): count if own pseudo-moves touch enemy knight squares
+  function bishopControlsKnightSquares() {
+    let s = 0;
+    const enemyKnightSquaresW = [];
+    const enemyKnightSquaresB = [];
+    for (const row of board) for (const sq of row) if (sq && sq.type==='n') {
+      if (sq.color==='w') enemyKnightSquaresB.push(sq.square);
+      else enemyKnightSquaresW.push(sq.square);
+    }
+    // Use whiteMoves/blackMoves generated earlier
+    const whiteTargets = new Set(whiteMoves.filter(m => m.piece==='b').map(m => m.to));
+    const blackTargets = new Set(blackMoves.filter(m => m.piece==='b').map(m => m.to));
+    for (const t of enemyKnightSquaresB) if (whiteTargets.has(t)) s += 0.05;
+    for (const t of enemyKnightSquaresW) if (blackTargets.has(t)) s -= 0.05;
+    return s;
+  }
+  score += bishopControlsKnightSquares();
+  // - First rook movement removing a castling side: 1 pawn
+  // - Second rook movement (other side lost) OR king movement (after one rook moved): 2 pawns
+  // - King movement before any rooks moved (losing both sides at once): 3 pawns
+  // - Total maximum penalty for losing all rights: 3 pawns
+  // - If opponent has lost their queen, penalty is quartered (x0.25)
+  // We approximate using FEN rights (presence of K/Q for white, k/q for black) and piece start squares.
+  function sidePenalty(color) {
+    const kingStart = color === 'w' ? 'e1' : 'e8';
+    const rookStarts = color === 'w' ? ['a1','h1'] : ['a8','h8'];
+    const hasKingside = rights.includes(color === 'w' ? 'K' : 'k');
+    const hasQueenside = rights.includes(color === 'w' ? 'Q' : 'q');
+    const lostSides = (hasKingside ? 0 : 1) + (hasQueenside ? 0 : 1);
+    if (lostSides === 0) return 0;
+    // Determine if king moved (not on start square)
+    const kingMoved = (color === 'w' ? wKing !== kingStart : bKing !== kingStart);
+    if (lostSides === 2) {
+      // Full rights lost
+      if (kingMoved) return 3; // king moved before/after rooks results in full penalty
+      // Both rooks moved away (king still at start) => still full penalty
+      return 3;
+    }
+    // lostSides === 1
+    // One side lost: treat as first rook moved => 1 pawn
+    return 1;
+  }
+  // Opponent queen presence check
+  function hasQueen(color) {
+    for (const row of board) for (const sq of row) if (sq && sq.type==='q' && sq.color===color) return true;
+    return false;
+  }
+  const oppQueenMissingForWhite = !hasQueen('b');
+  const oppQueenMissingForBlack = !hasQueen('w');
+  const whitePenaltyRaw = sidePenalty('w');
+  const blackPenaltyRaw = sidePenalty('b');
+  const whitePenalty = whitePenaltyRaw * (oppQueenMissingForWhite ? 0.25 : 1);
+  const blackPenalty = blackPenaltyRaw * (oppQueenMissingForBlack ? 0.25 : 1);
+  // Apply to score (white perspective): subtract white penalty, add black penalty
+  score -= whitePenalty;
+  score += blackPenalty;
+
+  // Early king move penalty: if king has moved off its starting square while some castling rights remain,
+  // strongly discourage premature king walks. Scaled if opponent queen is missing (reduce impact).
+  function earlyKingMovePenalty(color) {
+    const kingStart = color === 'w' ? 'e1' : 'e8';
+    const ksq = color === 'w' ? wKing : bKing;
+    if (!ksq) return 0;
+    const hasRights = rights.includes(color === 'w' ? 'K' : 'k') || rights.includes(color === 'w' ? 'Q' : 'q');
+    if (hasRights && ksq !== kingStart) {
+      // base penalty ~3.0 pawns per user request (strongly discourage premature king walks)
+      return 3.0;
+    }
+    return 0;
+  }
+  const wEarly = earlyKingMovePenalty('w') * (oppQueenMissingForWhite ? 0.5 : 1);
+  const bEarly = earlyKingMovePenalty('b') * (oppQueenMissingForBlack ? 0.5 : 1);
+  score -= wEarly;
+  score += bEarly;
+
+  // Castling incentive bonuses (requested):
+  // +2.0 for castling king side, +1.8 for queen side; reduced x0.25 if opponent queen is gone.
+  function hasPieceAt(square, type, color) {
+    for (const row of board) for (const sq of row) if (sq && sq.square === square && sq.type === type && sq.color === color) return true;
+    return false;
+  }
+  function castledSide(color) {
+    const ksq = color === 'w' ? wKing : bKing;
+    if (!ksq) return null;
+    // Detect by king destination and rook relocated square
+    if (color === 'w') {
+      if (ksq === 'g1' && hasPieceAt('f1','r','w')) return 'K';
+      if (ksq === 'c1' && hasPieceAt('d1','r','w')) return 'Q';
+    } else {
+      if (ksq === 'g8' && hasPieceAt('f8','r','b')) return 'k';
+      if (ksq === 'c8' && hasPieceAt('d8','r','b')) return 'q';
+    }
+    return null;
+  }
+  const whiteCastled = castledSide('w');
+  const blackCastled = castledSide('b');
+  if (whiteCastled) {
+    const mult = oppQueenMissingForWhite ? 0.25 : 1.0;
+    score += (whiteCastled === 'K' ? 2.0 : 1.8) * mult;
+  }
+  if (blackCastled) {
+    const mult = oppQueenMissingForBlack ? 0.25 : 1.0;
+    score -= (blackCastled === 'k' ? 2.0 : 1.8) * mult;
+  }
+
+  // Queen immediate capture (hanging) heuristic: if a queen can be captured right away, penalize heavily.
+  function findSquare(type, color) {
+    for (const row of board) for (const sq of row) if (sq && sq.type === type && sq.color === color) return sq.square;
+    return null;
+  }
+  const wQueenSq = findSquare('q','w');
+  const bQueenSq = findSquare('q','b');
+  // We already generated blackMoves and whiteMoves above (as attacks for king ring), reuse them.
+  if (wQueenSq) {
+    const canBeCaptured = blackMoves.some(m => m.to === wQueenSq && m.flags && m.flags.includes('c'));
+    if (canBeCaptured) score -= 6.0; // strong deterrent; full exchange resolution handled by search
+  }
+  if (bQueenSq) {
+    const canBeCaptured = whiteMoves.some(m => m.to === bQueenSq && m.flags && m.flags.includes('c'));
+    if (canBeCaptured) score += 6.0;
+  }
+
   // Checks: tiny bonus if opponent is in check
   if (chessW.isCheck()) score -= 0.2; // white to move in fen4 being in check is bad for white
   if (chessB.isCheck()) score += 0.2; // black to move (after flip) in check is good for white
 
   // Round to two decimals to stabilize scores
-  return Math.round(score * 100) / 100;
+  const finalScore = Math.round(score * 100) / 100;
+  // Cap cache size to avoid excessive memory
+  if (evaluateMaterial.cache.size > 5000) {
+    evaluateMaterial.cache.clear();
+  }
+  evaluateMaterial.cache.set(fen4, finalScore);
+  return finalScore;
 }
 
 // removed older orderChildren(fen4) in favor of TT-aware version below
@@ -286,6 +623,37 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
       return q;
     }
   }
+  // Selective tactical extensions
+  // 1. If previous move was a capture and position offers a direct recapture (SEE >= 0), extend +1
+  // 2. If side to move has a checking move among top ordered children at shallow depth, extend +1 for that move only.
+  // 3. Passed pawn push near promotion (rank 6/7 for side to move) extend +1.
+  let tacticalExtension = 0;
+  // Recapture/capture-sequence extension (approximate via captureParity >0)
+  if (captureParity > 0 && depth > 0 && !chess.isCheck()) {
+    tacticalExtension = Math.max(tacticalExtension, 1);
+  }
+  if (depth > 0) {
+    // Simple passed pawn detection: look for a friendly pawn on 6th/7th rank with no opposing pawn ahead on same file
+    const board = chess.board();
+    const stm = chess.turn();
+    const forward = stm === 'w' ? 1 : -1;
+    for (const row of board) for (const sq of row) if (sq && sq.type === 'p' && sq.color === stm) {
+      const rank = parseInt(sq.square[1],10);
+      if ((stm==='w' && rank>=6) || (stm==='b' && rank<=3)) {
+        const file = sq.square[0];
+        // scan ahead for enemy pawn
+        let blocked = false;
+        let r2 = rank + forward;
+        while (r2 >=1 && r2 <=8) {
+          const ahead = file + r2;
+          if (chess.get(ahead) && chess.get(ahead).type==='p' && chess.get(ahead).color!==stm) { blocked=true; break; }
+          r2 += forward;
+        }
+        if (!blocked) { tacticalExtension = Math.max(tacticalExtension,1); }
+      }
+    }
+  }
+  if (tacticalExtension) depth += tacticalExtension;
   // Mate scoring: prefer faster mates and avoid horizon oddities.
   // Use a large magnitude and incorporate ply to favor shorter mates.
   if (chess.isCheckmate()) {
@@ -322,17 +690,21 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
     const sh = sharedHintGet(hash);
     if (sh) prefer = packToUci(sh);
   }
-  const children = orderChildren(fen4, prefer, ctx, ply, depth); // pass preferred move (if any)
-  if (children.length === 0) return { score: evaluateMaterial(fen4), pv: [], aborted: false };
+  const children = orderChildren(fen4, prefer, ctx, ply, depth, deadline); // pass preferred move (if any)
+  if (children.length === 0) {
+    // No legal moves list (should be handled earlier as mate/draw), but return static eval to avoid null best.
+    return { score: evaluateMaterial(fen4), pv: [], aborted: false };
+  }
   // modest branching control deeper
   const maxB = depth > 7 ? 8 : depth > 5 ? 12 : depth > 3 ? 16 : 32;
   let bestScore = -Infinity;
   let bestPV = [];
   let bestMove = null;
-  let taken = 0;
-  for (let i = 0; i < children.length && (taken < maxB || children[i].isCheck); i++) {
+  // Allow up to a couple extra checking moves beyond cap, but not unlimited
+  let consumed = 0, extraChecks = 1, usedExtra = 0;
+  for (let i = 0; i < children.length && (consumed < maxB || (children[i].isCheck && usedExtra < extraChecks)); i++) {
     const ch = children[i];
-    if (!ch.isCheck) taken++;
+    if (consumed >= maxB && ch.isCheck) usedExtra++; else consumed++;
     // Late Move Reductions for quiet moves late in list
     let r;
     const isQuiet = !ch.isCap && !ch.isPromo && !ch.isCheck; // never reduce checking moves
@@ -378,7 +750,8 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
   ttStore(hash, depth, flag, bestScore, bestMove);
   if (bestMove) sharedHintSet(hash, uciToPack(bestMove), depth);
   if (bestScore <= alphaOrig) ctx.stats.fl++;
-  return { score: alpha, pv: bestPV, aborted: false };
+  // Return the real bestScore, not the current alpha (alpha may have overshot on fail-high pruning logic)
+  return { score: bestScore, pv: bestPV, aborted: false };
 }
 
 // Quiescence search over captures with SEE filter
@@ -427,15 +800,17 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
   TT_GENERATION++;
   const nodesObj = { count: 0 };
   const ctx = { killers: [], history: new Map(), stats: { fh: 0, fl: 0, ttHits: 0, lmrReductions: 0, nullTry: 0, nullCut: 0 } };
-  const moves = orderChildren(fen4, hintMove, ctx, 0, depth);
+  const moves = orderChildren(fen4, hintMove, ctx, 0, depth, deadline);
   let best = null;
   let bestScore = -Infinity;
   let alpha = alphaInit, beta = betaInit;
   const alphaOrig = alpha;
   const maxB = depth > 7 ? 8 : depth > 5 ? 12 : depth > 3 ? 24 : 64;
   const scored = [];
-  for (let i = 0; i < moves.length && i < maxB; i++) {
+  let consumed = 0, extraChecks = 1, usedExtra = 0;
+  for (let i = 0; i < moves.length && (consumed < maxB || (moves[i].isCheck && usedExtra < extraChecks)); i++) {
     const m = moves[i];
+    if (consumed >= maxB && m.isCheck) usedExtra++; else consumed++;
     const r = alphabetaPV(m.fen4, depth - 1, -beta, -alpha, m.isCap ? 1 : 0, nodesObj, deadline, ctx, 1, null);
     if (r.aborted) return { aborted: true, nodes: nodesObj.count };
     const s = -r.score;
@@ -446,6 +821,39 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
   }
   // Assemble best/worst only if requested by caller
   const base = { best, score: bestScore, nodes: nodesObj.count, scored, failLow: bestScore <= alphaOrig, failHigh: bestScore >= beta, fhCount: ctx.stats.fh, flCount: ctx.stats.fl, ttHits: ctx.stats.ttHits, lmrReductions: ctx.stats.lmrReductions, nullTries: ctx.stats.nullTry, nullCutoffs: ctx.stats.nullCut };
+  // Optional root move randomness among near-equal candidates
+  const enableRand = process.env.ENABLE_MOVE_RANDOMNESS === '1';
+  if (enableRand && scored.length > 1) {
+    const margin = parseFloat(process.env.ROOT_RANDOM_MARGIN || '0.15'); // pawns
+    // Collect moves within margin of bestScore
+    const near = scored.filter(m => (bestScore - m.score) <= margin && (bestScore - m.score) >= 0);
+    if (near.length > 1) {
+      // Simple xorshift64 PRNG
+      if (!global.__rootRandState) {
+        let seed = BigInt(process.env.RANDOM_SEED || Date.now());
+        if (seed === 0n) seed = 1n;
+        global.__rootRandState = seed;
+      }
+      function rand64() {
+        let x = global.__rootRandState;
+        // xorshift64* variant
+        x ^= x << 13n;
+        x ^= x >> 7n;
+        x ^= x << 17n;
+        global.__rootRandState = x & ((1n<<63n)-1n);
+        return Number(global.__rootRandState & 0xFFFFFFFFn);
+      }
+      const idx = rand64() % near.length;
+      const choice = near[idx];
+      base.best = choice.uci;
+      base.score = choice.score; // keep associated score
+    }
+  }
+  if (!best && moves.length > 0) {
+    // Guarantee a move for callers expecting a principal variation even if alpha/beta logic didn't set best (rare edge case)
+    best = moves[0].uci;
+    base.best = best;
+  }
   if (!verbose) return base;
   const sorted = [...scored].sort((a, b) => b.score - a.score);
   const top = sorted.slice(0, 3).map(x => ({ score: +x.score.toFixed(2), line: x.pv.join(' ') }));
@@ -454,11 +862,12 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
 }
 
 // Enhanced move ordering: allow TT best move to be considered first when ordering children.
-function orderChildren(fen4, ttBest, ctx, ply, depth = 0) {
+function orderChildren(fen4, ttBest, ctx, ply, depth = 0, deadline) {
   const base = new Chess(ensureSix(fen4));
   const legal = base.moves({ verbose: true });
   const out = [];
   const inCheckRoot = base.isCheck();
+  let unsafeBudget = 6;
   for (const m of legal) {
     const tmp = new Chess(ensureSix(fen4));
     const made = tmp.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
@@ -468,7 +877,8 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0) {
     const uci = m.from + m.to + (m.promotion || '');
     const isCap = !!(made.captured) || (made.flags && made.flags.includes('c'));
     const isPromo = !!m.promotion;
-    const pre = evaluateMaterial(cf);
+  // Keep ordering lightweight: avoid full eval here; rely on cap/SEE/killer/history/check bonuses
+  const pre = 0;
     // MVV-LVA-like: heavier bonus if capture high-value victim with low-value attacker
     let capBonus = 0;
     if (isCap && made.captured) {
@@ -497,8 +907,17 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0) {
       continue;
     }
     const seeBonus = isCap ? Math.max(-30, Math.min(60, see * 10)) : 0;
-  const CHECK_BONUS = parseInt(process.env.CHECK_BONUS || '3000', 10);
-  const checkBonus = givesCheck ? CHECK_BONUS : 0;
+  const CHECK_BONUS = parseInt(process.env.CHECK_BONUS || '900', 10);
+    let checkBonus = 0;
+    if (givesCheck) {
+      checkBonus = CHECK_BONUS;
+      // Scale down overly speculative checking moves that lose material per SEE
+      if (isCap && see < 0) {
+        checkBonus = Math.max(150, CHECK_BONUS + see * 120); // negative see reduces bonus
+      } else if (!isCap && see < -1) {
+        checkBonus = Math.max(150, Math.floor(CHECK_BONUS * 0.4));
+      }
+    }
     // Extra bonuses when we're in check: prioritize king safety evasions (captures, blocks, king moves)
     let evasionBonus = 0;
     if (inCheckRoot) {
@@ -506,8 +925,63 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0) {
       if (m.piece === 'k') evasionBonus += 1800; // king moves to escape check
       if (!isCap && givesCheck) evasionBonus += 500; // counter-check (rare but can be strong)
     }
-    const weight = (uci === ttBest ? 5000 : 0) + checkBonus + evasionBonus + (isCap ? capBonus : 0) + seeBonus + (isPromo ? 80 : 0) + killerBonus + histBonus + pre;
+    // If we give check via a non-capture but the checking piece is immediately recapturable cheaply, downweight (unsafe check)
+    let unsafePenalty = 0;
+    if (givesCheck && !isCap && unsafeBudget > 0) {
+      unsafeBudget--;
+      const enemyMoves = tmp.moves({ verbose: true });
+      const toSq = made.to;
+      const val = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
+      const movedVal = val[m.piece || 'p'] || 0;
+      for (const em of enemyMoves) {
+        if (em.to === toSq && em.flags && em.flags.includes('c')) {
+          const attackerVal = val[em.piece || 'p'] || 0;
+          if (attackerVal <= movedVal) { unsafePenalty = 900; break; }
+        }
+      }
+    }
+    // Penalize quiet king moves that relinquish castling rights early (unless in check or capturing)
+    if (m.piece === 'k' && !isCap && !inCheckRoot) {
+      // If king moves off starting square while rights remain, push it far down.
+      const rightsRemain = base.fen().split(' ')[2];
+      const kingStart = base.turn() === 'w' ? 'e1' : 'e8';
+      if (made.from === kingStart) {
+        // Large penalty; but keep possibility if TT or tactical check
+        unsafePenalty += 2500;
+      } else {
+        unsafePenalty += 800; // other slow king drifts
+      }
+    }
+    // Avoid hanging the queen: penalize queen moves to squares immediately capturable by a cheaper piece
+    if (m.piece === 'q' && !isCap) {
+      const enemyMoves = tmp.moves({ verbose: true });
+      const toSq = made.to;
+      const val = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
+      for (const em of enemyMoves) {
+        if (em.to === toSq && em.flags && em.flags.includes('c')) {
+          const attackerVal = val[em.piece || 'p'] || 0;
+          if (attackerVal <= 5) { // pawn/knight/bishop/rook
+            // At deeper depths, skip entirely to reduce obvious blunders
+            if (depth >= 4) { continue; }
+            unsafePenalty += 1800; // push far down the move list
+            break;
+          }
+        }
+      }
+    }
+    const weight = (uci === ttBest ? 5000 : 0) + checkBonus + evasionBonus - unsafePenalty + (isCap ? capBonus : 0) + seeBonus + (isPromo ? 80 : 0) + killerBonus + histBonus + pre;
     out.push({ uci, san: m.san, fen4: cf, pre, isCap, isPromo, isCheck: givesCheck, weight });
+  }
+  // Fallback: ensure at least one move if heuristics skipped all (e.g., all losing captures filtered)
+  if (out.length === 0 && legal.length > 0) {
+    const m = legal[0];
+    const tmp = new Chess(ensureSix(fen4));
+    const made = tmp.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
+    if (made) {
+      const cf = tmp.fen().split(' ').slice(0,4).join(' ');
+      const uci = m.from + m.to + (m.promotion || '');
+      out.push({ uci, san: m.san, fen4: cf, pre: 0, isCap: false, isPromo: !!m.promotion, isCheck: !!tmp.isCheck(), weight: 0 });
+    }
   }
   out.sort((a, b) => b.weight - a.weight);
   return out;
@@ -547,12 +1021,18 @@ parentPort.on('message', (msg) => {
       prevScore = one ? one.score : prevScore;
     }
     if (!lastComplete) {
-      // Return minimal info rather than failing hard
-      parentPort.postMessage({ id, ok: true, best: null, score: 0, nodes: 0, depthReached: 0, ms: Date.now() - t0 });
+      // Return minimal info rather than failing hard, but flag early abort to help server retry logic
+      parentPort.postMessage({ id, ok: true, best: null, score: 0, nodes: 0, depthReached: 0, abortedEarly: true, ms: Date.now() - t0 });
       return;
     }
   const { best, score, nodes, bestLines, worstLines, fhCount, flCount, ttHits, lmrReductions, nullTries, nullCutoffs } = lastComplete;
-  const payload = { id, ok: true, best, score, nodes, depthReached, fhCount, flCount, ttHits, lmrReductions, nullTries, nullCutoffs, ms: Date.now() - t0 };
+  // Mate distance derivation: score magnitude near MATE_BASE indicates mate; distance = MATE_BASE - |score|
+  let mateDistance = null;
+  const MATE_BASE = 100000;
+  if (Math.abs(score) >= MATE_BASE - 1000) {
+    mateDistance = MATE_BASE - Math.abs(score);
+  }
+  const payload = { id, ok: true, best, score, nodes, depthReached, fhCount, flCount, ttHits, lmrReductions, nullTries, nullCutoffs, mateDistance, ms: Date.now() - t0 };
     if (bestLines) payload.bestLines = bestLines;
     if (worstLines) payload.worstLines = worstLines;
     parentPort.postMessage(payload);

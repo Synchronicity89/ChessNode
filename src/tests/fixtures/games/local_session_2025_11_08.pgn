@@ -1,0 +1,9 @@
+[Event "Local Session"]
+[Site "Localhost"]
+[Date "2025-11-08"]
+[Round "-"]
+[White "Human"]
+[Black "Engine"]
+[Result "*"]
+
+1. d4 e5 2. Nf3 g5 3. Nxe5 Qf6 4. Nc3 Ke7 5. Ne4 Qxf2+ 6. Nxf2 Ke8 7. Bxg5 Nc6 8. Qd3 Bh6 9. Qf5 Nf6 10. Qxf6 Rf8 11. Nxc6 Bxg5 12. Qxg5 bxc6 13. O-O-O d5 14. Ng4 Bxg4 15. h3 Be6 16. e4 Rb8 17. exd5 Kd7 18. dxe6+ fxe6 19. Bc4 Rf2 20. Rhe1 Kd6 21. Rxe6+ Kd7 22. Qe7+ Kc8 23. Rxc6 Rxc2+ 24. Kxc2 Rxb2+ 25. Kxb2 Kb7 26. Qxc7+ Ka8 27. Qc8# *

@@ -50,5 +50,10 @@ describe('Mate/decisive detection', () => {
     }
     // Ensure score magnitude is reasonably large indicating tactical dominance
     expect(Math.abs(r.score)).toBeGreaterThanOrEqual(3000);
+    if (r.mateDistance != null) {
+      // For immediate mates we expect small distance (<=4)
+      expect(r.mateDistance).toBeLessThanOrEqual(4);
+      expect(r.mateDistance).toBeGreaterThanOrEqual(0);
+    }
   });
 });
