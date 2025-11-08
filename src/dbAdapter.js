@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const https = require('https');
+const { Format1Store } = require('./format1Store');
 
 const CACHE_DIR = path.join(__dirname, 'db_cache');
 if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR);
@@ -41,6 +42,7 @@ async function fetchToCache(url, nameHint) {
 
 // Small in-memory map for demonstration (not scaled)
 const smallOpeningMap = new Map(); // fen -> index
+let format1Store = null;
 
 function addToOpeningDB(fen, index) {
   smallOpeningMap.set(fen, index);
@@ -50,6 +52,17 @@ function findPosition(fen) {
   const cf = fen.trim();
   if (smallOpeningMap.has(cf)) {
     return { found: true, subformat: 0, index: smallOpeningMap.get(cf) };
+  }
+  // Try persistent Format1 store
+  try {
+    if (!format1Store) {
+      const baseDir = path.join(__dirname, '..', 'data', 'format1');
+      format1Store = new Format1Store(baseDir);
+    }
+    const idx = format1Store.findIndexByFen(cf);
+    if (idx && idx > 0) return { found: true, subformat: 0, index: idx };
+  } catch (e) {
+    // ignore and fall through
   }
   return { found: false };
 }

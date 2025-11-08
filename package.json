@@ -11,7 +11,10 @@
     "lint": "eslint . --ext .js",
     "lint:fix": "eslint . --ext .js --fix",
     "format": "prettier --write .",
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "start:8ply": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:SEARCH_WORKER_BUDGET_MS='16000'; $env:SEARCH_TIMEOUT_BASE_MS='4000'; $env:SEARCH_TIMEOUT_PER_DEPTH_MS='2000'; $env:MAX_TT_ENTRIES='300000'; node src/server.js\"",
+    "start:fast": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:SEARCH_WORKER_BUDGET_MS='4000'; $env:SEARCH_TIMEOUT_BASE_MS='2000'; $env:SEARCH_TIMEOUT_PER_DEPTH_MS='750'; $env:MAX_TT_ENTRIES='150000'; node src/server.js\"",
+    "start:deep": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:SEARCH_WORKER_BUDGET_MS='30000'; $env:SEARCH_TIMEOUT_BASE_MS='6000'; $env:SEARCH_TIMEOUT_PER_DEPTH_MS='2500'; $env:MAX_TT_ENTRIES='400000'; node src/server.js\""
   },
   "devDependencies": {
     "jest": "^29.7.0",
