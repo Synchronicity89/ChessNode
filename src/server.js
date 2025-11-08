@@ -448,6 +448,27 @@ async function main() {
     }
   });
 
+  // Reset accumulated session search statistics
+  app.post('/api/stats/reset', (req, res) => {
+    try {
+      sessionStats.searches = 0;
+      sessionStats.totalNodes = 0;
+      sessionStats.totalMs = 0;
+      sessionStats.totalFh = 0;
+      sessionStats.totalFl = 0;
+      sessionStats.totalTtHits = 0;
+      sessionStats.totalLmrReductions = 0;
+      sessionStats.totalNullTries = 0;
+      sessionStats.totalNullCutoffs = 0;
+      sessionStats.recent = [];
+      // Clear in-memory search cache as well
+      searchCache.clear();
+      res.json({ ok: true, reset: true, sessionTotals: makeSessionTotals() });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+
   // Ponder endpoint: when it's the human's turn at fen, pre-search all child positions (after human moves)
   app.post('/api/engine/ponder', async (req, res) => {
     try {

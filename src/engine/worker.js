@@ -286,7 +286,15 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
       return q;
     }
   }
-  if (chess.isCheckmate()) return { score: -100000, pv: [], aborted: false };
+  // Mate scoring: prefer faster mates and avoid horizon oddities.
+  // Use a large magnitude and incorporate ply to favor shorter mates.
+  if (chess.isCheckmate()) {
+    const MATE_BASE = 100000;
+    // Negative score because side to move is checkmated.
+    // Incorporate ply to prefer faster mates from the root's perspective.
+    const dist = Math.max(0, ply | 0);
+    return { score: -(MATE_BASE - dist), pv: [], aborted: false, mate: true };
+  }
   if (chess.isDraw()) return { score: 0, pv: [], aborted: false };
   // Null-move pruning: if not in check and enough depth, try a null move
   if (depth >= 3 && !chess.isCheck()) {
@@ -343,7 +351,7 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
     } else {
       r = alphabetaPV(ch.fen4, depth - 1, -beta, -alpha, ch.isCap ? captureParity + 1 : 0, nodesObj, deadline, ctx, (ply|0)+1, null);
     }
-    if (r.aborted) return { score: 0, pv: [], aborted: true };
+  if (r.aborted) return { score: 0, pv: [], aborted: true };
     const score = -r.score;
     const pv = [ch.san, ...r.pv];
     if (score >= beta) {
@@ -450,6 +458,7 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0) {
   const base = new Chess(ensureSix(fen4));
   const legal = base.moves({ verbose: true });
   const out = [];
+  const inCheckRoot = base.isCheck();
   for (const m of legal) {
     const tmp = new Chess(ensureSix(fen4));
     const made = tmp.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
@@ -488,8 +497,16 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0) {
       continue;
     }
     const seeBonus = isCap ? Math.max(-30, Math.min(60, see * 10)) : 0;
-    const checkBonus = givesCheck ? 3000 : 0;
-    const weight = (uci === ttBest ? 5000 : 0) + checkBonus + (isCap ? capBonus : 0) + seeBonus + (isPromo ? 80 : 0) + killerBonus + histBonus + pre;
+  const CHECK_BONUS = parseInt(process.env.CHECK_BONUS || '3000', 10);
+  const checkBonus = givesCheck ? CHECK_BONUS : 0;
+    // Extra bonuses when we're in check: prioritize king safety evasions (captures, blocks, king moves)
+    let evasionBonus = 0;
+    if (inCheckRoot) {
+      if (isCap) evasionBonus += 1500; // capturing checking piece or interposing with capture
+      if (m.piece === 'k') evasionBonus += 1800; // king moves to escape check
+      if (!isCap && givesCheck) evasionBonus += 500; // counter-check (rare but can be strong)
+    }
+    const weight = (uci === ttBest ? 5000 : 0) + checkBonus + evasionBonus + (isCap ? capBonus : 0) + seeBonus + (isPromo ? 80 : 0) + killerBonus + histBonus + pre;
     out.push({ uci, san: m.san, fen4: cf, pre, isCap, isPromo, isCheck: givesCheck, weight });
   }
   out.sort((a, b) => b.weight - a.weight);

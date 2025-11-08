@@ -419,6 +419,18 @@ import { Chess } from '/vendor/chess-esm.js';
     await searchCountersInDB(counters);
   });
   document.getElementById('btn-play-db').addEventListener('click', playRandomDBCounter);
+  document.getElementById('btn-reset-stats').addEventListener('click', async () => {
+    try {
+      const r = await fetch('/api/stats/reset', { method: 'POST' });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'reset failed');
+      log('Stats reset.');
+      // Clear engine info panel to reflect reset
+      renderEngineInfo(null);
+    } catch (e) {
+      log('Reset error: ' + e.message);
+    }
+  });
 
   const config = {
     draggable: true,
