@@ -1,8 +1,33 @@
 'use strict';
 const { parentPort, workerData } = require('worker_threads');
+const fs = require('fs');
+
+// Profiling flag (timestamp mode): off by default. Enable with env TIMESTAMP_MODE=1 or workerData.timestamp.
+// Made mutable to allow runtime toggling via 'profile-toggle' worker messages.
+let PROFILING_ENABLED = (function(){
+  try { if (workerData && typeof workerData.timestamp !== 'undefined') return !!workerData.timestamp; } catch {}
+  return process.env.TIMESTAMP_MODE === '1';
+})();
+
+// Current profile object for an active search request (scoped per message)
+let CURRENT_PROFILE = null;
+// Per-search move generation cache (fen4 -> verbose move list). Reinitialized per search.
+let MOVE_CACHE = null;
+const MAX_MOVE_CACHE_ENTRIES = parseInt(process.env.MAX_MOVE_CACHE_ENTRIES || '50000', 10);
 
 let Chess;
 try { Chess = require('chess.js').Chess; } catch (e) { /* will throw on use */ }
+// Root selection flip: if FLIP=-1, choose worst root move by flipping scores during selection
+const ROOT_FLIP = (function(){
+  try {
+    if (workerData && typeof workerData.flip !== 'undefined') {
+      const v = Number(workerData.flip);
+      return v === -1 ? -1 : 1;
+    }
+  } catch {}
+  const v = parseInt(process.env.FLIP || '1', 10);
+  return v === -1 ? -1 : 1;
+})();
 
 // -----------------------------
 // Transposition Table (TT)
@@ -78,6 +103,7 @@ function ttGet(hash, depth, alpha, beta) {
   const e = TT.get(hash);
   if (!e) return { hit: false, alpha, beta };
   if (e.depth < depth) return { hit: false, alpha, beta }; // insufficient depth
+  if (CURRENT_PROFILE) CURRENT_PROFILE.ttGetCount++;
   // Adjust alpha/beta based on flag
   if (e.flag === TT_EXACT) {
     return { hit: true, exact: true, score: e.score, move: e.move };
@@ -96,6 +122,7 @@ function ttGet(hash, depth, alpha, beta) {
 function ttStore(hash, depth, flag, score, move) {
   if (MAX_TT_ENTRIES <= 0) return;
   TT.set(hash, { depth, flag, score, move, gen: TT_GENERATION });
+  if (CURRENT_PROFILE) CURRENT_PROFILE.ttStoreCount++;
   if (TT.size > MAX_TT_ENTRIES) {
     // Prune ~10% oldest generations
     const target = Math.floor(MAX_TT_ENTRIES * 0.9);
@@ -110,6 +137,40 @@ function ttStore(hash, depth, flag, score, move) {
 function ensureSix(f4) {
   const p = f4.trim().split(/\s+/);
   return p.length >= 6 ? f4 : `${p[0]} ${p[1]} ${p[2]} ${p[3]} 0 1`;
+}
+
+function movesCached(fen4, bucket /* 'eval' | 'order' | 'other' */) {
+  if (!MOVE_CACHE) MOVE_CACHE = new Map();
+  const key = fen4; // fen4 already canonical (piece/side/castle/ep)
+  const hit = MOVE_CACHE.get(key);
+  if (hit) return hit;
+  const _t = PROFILING_ENABLED && CURRENT_PROFILE ? process.hrtime.bigint() : null;
+  const mv = new Chess(ensureSix(fen4)).moves({ verbose: true });
+  if (_t) {
+    const dt = process.hrtime.bigint() - _t;
+    CURRENT_PROFILE.moveGenTimeNs = (CURRENT_PROFILE.moveGenTimeNs || 0n) + dt;
+    CURRENT_PROFILE.moveGenCalls = (CURRENT_PROFILE.moveGenCalls || 0) + 1;
+    CURRENT_PROFILE.movesGenerated = (CURRENT_PROFILE.movesGenerated || 0) + mv.length;
+    if (bucket === 'eval') {
+      CURRENT_PROFILE.evalMoveGenTimeNs = (CURRENT_PROFILE.evalMoveGenTimeNs || 0n) + dt;
+      CURRENT_PROFILE.evalMoveGenCalls = (CURRENT_PROFILE.evalMoveGenCalls || 0) + 1;
+      CURRENT_PROFILE.evalMovesGenerated = (CURRENT_PROFILE.evalMovesGenerated || 0) + mv.length;
+    } else if (bucket === 'order') {
+      CURRENT_PROFILE.orderMoveGenTimeNs = (CURRENT_PROFILE.orderMoveGenTimeNs || 0n) + dt;
+      CURRENT_PROFILE.orderMoveGenCalls = (CURRENT_PROFILE.orderMoveGenCalls || 0) + 1;
+      CURRENT_PROFILE.orderMovesGenerated = (CURRENT_PROFILE.orderMovesGenerated || 0) + mv.length;
+    }
+  }
+  MOVE_CACHE.set(key, mv);
+  if (MOVE_CACHE.size > MAX_MOVE_CACHE_ENTRIES) {
+    // prune ~10%
+    const target = Math.floor(MAX_MOVE_CACHE_ENTRIES * 0.9);
+    for (const k of MOVE_CACHE.keys()) {
+      if (MOVE_CACHE.size <= target) break;
+      MOVE_CACHE.delete(k);
+    }
+  }
+  return mv;
 }
 
 // -----------------------------
@@ -171,6 +232,8 @@ function sharedHintSet(zHash, movePack, depth) {
 
 // Enhanced evaluation: material baseline + mobility + center control + simple king safety
 function evaluateMaterial(fen4) {
+  const _pStart = PROFILING_ENABLED && CURRENT_PROFILE ? process.hrtime.bigint() : null;
+  if (CURRENT_PROFILE) CURRENT_PROFILE.evalCalls = (CURRENT_PROFILE.evalCalls || 0) + 1;
   // Simple per-search evaluation memo (cleared between root iterations elsewhere if desired)
   if (!evaluateMaterial.cache) evaluateMaterial.cache = new Map();
   const cached = evaluateMaterial.cache.get(fen4);
@@ -201,27 +264,22 @@ function evaluateMaterial(fen4) {
     // Use '-' for en-passant to avoid invalid ep square when flipping side
     return `${p[0]} ${p[1] === 'w' ? 'b' : 'w'} ${p[2]} -`;
   }
-  // Mobility (legal moves count difference)
-  const movesW = chessW.moves({ verbose: true }).length;
+  // Mobility & move lists (generate once per side and reuse across heuristics)
   const chessB = new Chess(ensureSix(flipSide(fen4)));
-  const movesB = chessB.moves({ verbose: true }).length;
-  const mobility = (movesW - movesB) * 0.06; // light weight
+  let whiteMoves = movesCached(fen4, 'eval');
+  let blackMoves = movesCached(flipSide(fen4), 'eval');
+  const mobility = (whiteMoves.length - blackMoves.length) * 0.06; // light weight
   score += mobility;
 
   // Center control and occupancy
   const centers = new Set(['d4','e4','d5','e5']);
-  function countAttacks(chess) {
-    let cnt = 0;
-    const mv = chess.moves({ verbose: true });
-    for (const m of mv) if (centers.has(m.to)) cnt++;
-    return cnt;
-  }
+  function countCenterTargets(mvList) { let c=0; for (const m of mvList) if (centers.has(m.to)) c++; return c; }
   function countOccupancy(targetColor) {
     let cnt = 0;
     for (const row of board) for (const sq of row) if (sq && sq.color === targetColor && centers.has(sq.square)) cnt++;
     return cnt;
   }
-  const centerAttackDiff = (countAttacks(chessW) - countAttacks(chessB)) * 0.1;
+  const centerAttackDiff = (countCenterTargets(whiteMoves) - countCenterTargets(blackMoves)) * 0.1;
   const centerOccDiff = (countOccupancy('w') - countOccupancy('b')) * 0.15;
   score += centerAttackDiff + centerOccDiff;
 
@@ -271,12 +329,6 @@ function evaluateMaterial(fen4) {
     for (const m of enemyMoves) if (set.has(m.to)) c++;
     return c;
   }
-  // Generate black moves (attacks on white) and white moves (attacks on black)
-  function flipSideRaw(f4, side) { const p = f4.split(/\s+/); return `${p[0]} ${side} ${p[2]} -`; }
-  const chessBlackToMove = new Chess(ensureSix(flipSideRaw(fen4,'b')));
-  const blackMoves = chessBlackToMove.moves({ verbose: true });
-  const chessWhiteToMove = new Chess(ensureSix(flipSideRaw(fen4,'w')));
-  const whiteMoves = chessWhiteToMove.moves({ verbose: true });
   const wPressure = countAttacksOn(wRing, blackMoves);
   const bPressure = countAttacksOn(bRing, whiteMoves);
   // Pressure scaling: each attack ~0.08 pawns
@@ -348,7 +400,8 @@ function evaluateMaterial(fen4) {
     for (const st of starts) {
       const piece = get(st.sq);
       if (piece && piece.type === st.t && piece.color === st.c) {
-        s += (st.c==='w' ? -0.05 : 0.05);
+        // Slightly stronger penalty for undeveloped minors on their start squares (+50%)
+        s += (st.c==='w' ? -0.075 : 0.075);
       }
     }
     return s;
@@ -527,8 +580,45 @@ function evaluateMaterial(fen4) {
   score -= wEarly;
   score += bEarly;
 
+  // Castling readiness (forward-looking incentive): reward retaining rights AND clear path pieces
+  // to encourage timely castling before threats escalate. Scaled smaller than actual castling bonus.
+  function isCastled(color) {
+    const ksq = color === 'w' ? wKing : bKing;
+    if (!ksq) return false;
+    if (color === 'w') return ksq === 'g1' || ksq === 'c1';
+    return ksq === 'g8' || ksq === 'c8';
+  }
+  function squaresEmpty(list) {
+    for (const sq of list) if (get(sq)) return false; return true;
+  }
+  function castlingReadiness(color) {
+    if (isCastled(color)) return 0; // already castled handled elsewhere
+    const hasKingSide = rights.includes(color === 'w' ? 'K' : 'k');
+    const hasQueenSide = rights.includes(color === 'w' ? 'Q' : 'q');
+    if (!hasKingSide && !hasQueenSide) return 0;
+    const kingStart = color === 'w' ? 'e1' : 'e8';
+    const ksq = color === 'w' ? wKing : bKing;
+    if (ksq !== kingStart) return 0; // king moved, readiness moot
+    let bonus = 0;
+    // Kingside path squares must be empty (f1,g1) / (f8,g8)
+    if (hasKingSide) {
+      const path = color === 'w' ? ['f1','g1'] : ['f8','g8'];
+      if (squaresEmpty(path)) bonus += 0.6; // readiness bonus
+    }
+    // Queenside path squares must be empty (b1,c1,d1)/(b8,c8,d8)
+    if (hasQueenSide) {
+      const path = color === 'w' ? ['b1','c1','d1'] : ['b8','c8','d8'];
+      if (squaresEmpty(path)) bonus += 0.5;
+    }
+    return bonus;
+  }
+  const readinessWhite = castlingReadiness('w') * (oppQueenMissingForWhite ? 0.4 : 1) * 1.2;
+  const readinessBlack = castlingReadiness('b') * (oppQueenMissingForBlack ? 0.4 : 1) * 1.2;
+  score += readinessWhite; // white perspective
+  score -= readinessBlack; // subtract black's readiness (good for black)
+
   // Castling incentive bonuses (requested):
-  // +2.0 for castling king side, +1.8 for queen side; reduced x0.25 if opponent queen is gone.
+  // +4.0 for castling king side, +3.4 for queen side; reduced x0.25 if opponent queen is gone.
   function hasPieceAt(square, type, color) {
     for (const row of board) for (const sq of row) if (sq && sq.square === square && sq.type === type && sq.color === color) return true;
     return false;
@@ -550,11 +640,11 @@ function evaluateMaterial(fen4) {
   const blackCastled = castledSide('b');
   if (whiteCastled) {
     const mult = oppQueenMissingForWhite ? 0.25 : 1.0;
-    score += (whiteCastled === 'K' ? 2.0 : 1.8) * mult;
+    score += (whiteCastled === 'K' ? 4.0 : 3.4) * mult;
   }
   if (blackCastled) {
     const mult = oppQueenMissingForBlack ? 0.25 : 1.0;
-    score -= (blackCastled === 'k' ? 2.0 : 1.8) * mult;
+    score -= (blackCastled === 'k' ? 4.0 : 3.4) * mult;
   }
 
   // Queen immediate capture (hanging) heuristic: if a queen can be captured right away, penalize heavily.
@@ -574,6 +664,19 @@ function evaluateMaterial(fen4) {
     if (canBeCaptured) score += 6.0;
   }
 
+  // Early flank pawn pushes (a/h files) before castling: discourage slow wing loosening
+  function pieceAt(square) { const p = get(square); return p ? { t:p.type, c:p.color } : null; }
+  const whiteUncastled = !isCastled('w');
+  if (whiteUncastled) {
+    const flankSquares = ['a3','a4','h3','h4'];
+    let flankPushes = 0;
+    for (const sq of flankSquares) {
+      const p = pieceAt(sq);
+      if (p && p.c==='w' && p.t==='p') flankPushes++;
+    }
+    if (flankPushes) score -= Math.min(1.0, flankPushes * 0.45);
+  }
+
   // Checks: tiny bonus if opponent is in check
   if (chessW.isCheck()) score -= 0.2; // white to move in fen4 being in check is bad for white
   if (chessB.isCheck()) score += 0.2; // black to move (after flip) in check is good for white
@@ -585,6 +688,7 @@ function evaluateMaterial(fen4) {
     evaluateMaterial.cache.clear();
   }
   evaluateMaterial.cache.set(fen4, finalScore);
+  if (_pStart) CURRENT_PROFILE.evalTimeNs += process.hrtime.bigint() - _pStart;
   return finalScore;
 }
 
@@ -598,6 +702,7 @@ function timeUp(deadline, nodes) {
 }
 
 function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, deadline, ctx, ply, hintMove) {
+  const _pStart = PROFILING_ENABLED && CURRENT_PROFILE ? process.hrtime.bigint() : null;
   nodesObj.count++;
   if (timeUp(deadline, nodesObj)) return { score: 0, pv: [], aborted: true };
   const chess = new Chess(ensureSix(fen4));
@@ -680,6 +785,7 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
         if (score >= beta) {
           if (ctx && ctx.stats) ctx.stats.nullCut = (ctx.stats.nullCut || 0) + 1;
           ttStore(hash, depth, TT_LOWER, score, null);
+          if (CURRENT_PROFILE) CURRENT_PROFILE.nullMoveCount++;
           return { score: beta, pv: [], aborted: false };
         }
       }
@@ -692,8 +798,13 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
   }
   const children = orderChildren(fen4, prefer, ctx, ply, depth, deadline); // pass preferred move (if any)
   if (children.length === 0) {
-    // No legal moves list (should be handled earlier as mate/draw), but return static eval to avoid null best.
-    return { score: evaluateMaterial(fen4), pv: [], aborted: false };
+    // No legal moves list (should be handled earlier as mate/draw), but return static eval in STM perspective.
+    const parts = fen4.split(/\s+/);
+    const stm = parts[1];
+    const w = evaluateMaterial(fen4);
+    const res = { score: (stm === 'w') ? w : -w, pv: [], aborted: false };
+    if (_pStart) CURRENT_PROFILE.alphabetaTimeNs += process.hrtime.bigint() - _pStart;
+    return res;
   }
   // modest branching control deeper
   const maxB = depth > 7 ? 8 : depth > 5 ? 12 : depth > 3 ? 16 : 32;
@@ -738,7 +849,9 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
         ctx.history.set(ch.uci, old + depth * depth);
       }
       ctx.stats.fh++;
-      return { score, pv, aborted: false };
+      const ret = { score, pv, aborted: false };
+      if (_pStart) CURRENT_PROFILE.alphabetaTimeNs += process.hrtime.bigint() - _pStart;
+      return ret;
     }
     if (score > alpha) alpha = score;
     if (score > bestScore) { bestScore = score; bestPV = pv; bestMove = ch.uci; }
@@ -751,14 +864,21 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
   if (bestMove) sharedHintSet(hash, uciToPack(bestMove), depth);
   if (bestScore <= alphaOrig) ctx.stats.fl++;
   // Return the real bestScore, not the current alpha (alpha may have overshot on fail-high pruning logic)
-  return { score: bestScore, pv: bestPV, aborted: false };
+  const finalRes = { score: bestScore, pv: bestPV, aborted: false };
+  if (_pStart) CURRENT_PROFILE.alphabetaTimeNs += process.hrtime.bigint() - _pStart;
+  return finalRes;
 }
 
 // Quiescence search over captures with SEE filter
 function quiesce(fen4, alpha, beta, nodesObj, deadline) {
+  const _pStart = PROFILING_ENABLED && CURRENT_PROFILE ? process.hrtime.bigint() : null;
   nodesObj.count++;
   if (timeUp(deadline, nodesObj)) return { score: alpha, pv: [], aborted: true };
-  const stand = evaluateMaterial(fen4);
+  // Compute evaluation from side-to-move perspective for consistent negamax
+  const p = fen4.split(/\s+/);
+  const stm = p[1];
+  const standW = evaluateMaterial(fen4);
+  const stand = (stm === 'w') ? standW : -standW;
   if (stand >= beta) return { score: stand, pv: [], aborted: false };
   if (stand > alpha) alpha = stand;
   const caps = listCapturesOrdered(fen4);
@@ -771,12 +891,14 @@ function quiesce(fen4, alpha, beta, nodesObj, deadline) {
     if (score >= beta) return { score, pv: [], aborted: false };
     if (score > alpha) alpha = score;
   }
-  return { score: alpha, pv: [], aborted: false };
+  const res = { score: alpha, pv: [], aborted: false };
+  if (_pStart) CURRENT_PROFILE.quiesceTimeNs += process.hrtime.bigint() - _pStart;
+  return res;
 }
 
 function listCapturesOrdered(fen4) {
   const base = new Chess(ensureSix(fen4));
-  const legal = base.moves({ verbose: true });
+  const legal = movesCached(fen4, 'other');
   const out = [];
   for (const m of legal) {
     if (!m.flags || !m.flags.includes('c')) continue;
@@ -801,8 +923,11 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
   const nodesObj = { count: 0 };
   const ctx = { killers: [], history: new Map(), stats: { fh: 0, fl: 0, ttHits: 0, lmrReductions: 0, nullTry: 0, nullCut: 0 } };
   const moves = orderChildren(fen4, hintMove, ctx, 0, depth, deadline);
+  const rootTurn = fen4.split(/\s+/)[1];
   let best = null;
-  let bestScore = -Infinity;
+  let bestScoreWhite = -Infinity; // white-centric score of chosen move
+  let bestScoreRoot = -Infinity;  // root-side perspective score used for alpha/beta logic
+  let bestCmpScore = -Infinity; // comparison score (possibly flipped by ROOT_FLIP)
   let alpha = alphaInit, beta = betaInit;
   const alphaOrig = alpha;
   const maxB = depth > 7 ? 8 : depth > 5 ? 12 : depth > 3 ? 24 : 64;
@@ -813,20 +938,25 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
     if (consumed >= maxB && m.isCheck) usedExtra++; else consumed++;
     const r = alphabetaPV(m.fen4, depth - 1, -beta, -alpha, m.isCap ? 1 : 0, nodesObj, deadline, ctx, 1, null);
     if (r.aborted) return { aborted: true, nodes: nodesObj.count };
-    const s = -r.score;
+    const sRootSide = -r.score; // score from current root side perspective (negamax property)
+    const sWhite = (rootTurn === 'w') ? sRootSide : -sRootSide; // convert to always white-centric
     const pv = [m.san, ...r.pv];
-    scored.push({ uci: m.uci, san: m.san, score: s, pv });
-    if (s > bestScore) { bestScore = s; best = m.uci; }
-    if (s > alpha) alpha = s;
+    scored.push({ uci: m.uci, san: m.san, score: sWhite, pv });
+  // Root move selection: maximize white-centric score for white to move, minimize it for black.
+  // ROOT_FLIP allows choosing worst instead for testing (FLIP=-1).
+  const sideFactor = (rootTurn === 'w') ? 1 : -1; // black wants lower white-centric values
+  const cmp = (sWhite * sideFactor) * ROOT_FLIP;
+    if (cmp > bestCmpScore) { bestCmpScore = cmp; bestScoreWhite = sWhite; bestScoreRoot = sRootSide; best = m.uci; }
+    if (sRootSide > alpha) alpha = sRootSide; // alpha/beta remain in root-side perspective for pruning
   }
   // Assemble best/worst only if requested by caller
-  const base = { best, score: bestScore, nodes: nodesObj.count, scored, failLow: bestScore <= alphaOrig, failHigh: bestScore >= beta, fhCount: ctx.stats.fh, flCount: ctx.stats.fl, ttHits: ctx.stats.ttHits, lmrReductions: ctx.stats.lmrReductions, nullTries: ctx.stats.nullTry, nullCutoffs: ctx.stats.nullCut };
+  const base = { best, score: bestScoreWhite, nodes: nodesObj.count, scored, failLow: bestScoreRoot <= alphaOrig, failHigh: bestScoreRoot >= beta, fhCount: ctx.stats.fh, flCount: ctx.stats.fl, ttHits: ctx.stats.ttHits, lmrReductions: ctx.stats.lmrReductions, nullTries: ctx.stats.nullTry, nullCutoffs: ctx.stats.nullCut };
   // Optional root move randomness among near-equal candidates
   const enableRand = process.env.ENABLE_MOVE_RANDOMNESS === '1';
   if (enableRand && scored.length > 1) {
     const margin = parseFloat(process.env.ROOT_RANDOM_MARGIN || '0.15'); // pawns
     // Collect moves within margin of bestScore
-    const near = scored.filter(m => (bestScore - m.score) <= margin && (bestScore - m.score) >= 0);
+    const near = scored.filter(m => (bestScoreWhite - m.score) <= margin && (bestScoreWhite - m.score) >= 0);
     if (near.length > 1) {
       // Simple xorshift64 PRNG
       if (!global.__rootRandState) {
@@ -846,7 +976,7 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
       const idx = rand64() % near.length;
       const choice = near[idx];
       base.best = choice.uci;
-      base.score = choice.score; // keep associated score
+      base.score = choice.score; // keep associated white-centric score
     }
   }
   if (!best && moves.length > 0) {
@@ -863,8 +993,12 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
 
 // Enhanced move ordering: allow TT best move to be considered first when ordering children.
 function orderChildren(fen4, ttBest, ctx, ply, depth = 0, deadline) {
+  const _pStart = PROFILING_ENABLED && CURRENT_PROFILE ? process.hrtime.bigint() : null;
   const base = new Chess(ensureSix(fen4));
-  const legal = base.moves({ verbose: true });
+  let legal;
+  {
+    legal = movesCached(fen4, 'order');
+  }
   const out = [];
   const inCheckRoot = base.isCheck();
   let unsafeBudget = 6;
@@ -929,7 +1063,7 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0, deadline) {
     let unsafePenalty = 0;
     if (givesCheck && !isCap && unsafeBudget > 0) {
       unsafeBudget--;
-      const enemyMoves = tmp.moves({ verbose: true });
+      let enemyMoves = movesCached(cf, 'order');
       const toSq = made.to;
       const val = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
       const movedVal = val[m.piece || 'p'] || 0;
@@ -942,19 +1076,24 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0, deadline) {
     }
     // Penalize quiet king moves that relinquish castling rights early (unless in check or capturing)
     if (m.piece === 'k' && !isCap && !inCheckRoot) {
-      // If king moves off starting square while rights remain, push it far down.
-      const rightsRemain = base.fen().split(' ')[2];
-      const kingStart = base.turn() === 'w' ? 'e1' : 'e8';
-      if (made.from === kingStart) {
-        // Large penalty; but keep possibility if TT or tactical check
-        unsafePenalty += 2500;
+      const isCastle = m.flags && (m.flags.includes('k') || m.flags.includes('q'));
+      if (isCastle) {
+        // Strong bonus to surface castling moves early; configurable.
+        const CASTLE_BONUS = parseInt(process.env.CASTLE_BONUS || '1600', 10);
+        unsafePenalty -= CASTLE_BONUS; // subtract from penalty bucket (acts as bonus)
       } else {
-        unsafePenalty += 800; // other slow king drifts
+        // If king moves off starting square while rights remain, push it far down.
+        const kingStart = base.turn() === 'w' ? 'e1' : 'e8';
+        if (made.from === kingStart) {
+          unsafePenalty += 2500; // large penalty for early manual king walk
+        } else {
+          unsafePenalty += 800; // other slow king drifts
+        }
       }
     }
     // Avoid hanging the queen: penalize queen moves to squares immediately capturable by a cheaper piece
     if (m.piece === 'q' && !isCap) {
-      const enemyMoves = tmp.moves({ verbose: true });
+      let enemyMoves = movesCached(cf, 'order');
       const toSq = made.to;
       const val = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
       for (const em of enemyMoves) {
@@ -984,20 +1123,54 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0, deadline) {
     }
   }
   out.sort((a, b) => b.weight - a.weight);
+  if (_pStart) CURRENT_PROFILE.orderChildrenTimeNs += process.hrtime.bigint() - _pStart;
   return out;
 }
 
 parentPort.on('message', (msg) => {
-  if (!msg || msg.type !== 'search') return;
+  if (!msg || (msg.type !== 'search' && msg.type !== 'profile-toggle')) return;
+  if (msg.type === 'profile-toggle') {
+    PROFILING_ENABLED = !!msg.enabled;
+    // Acknowledge toggle
+    try { parentPort.postMessage({ id: msg.id || null, ok: true, profilingEnabled: PROFILING_ENABLED, type: 'profile-toggle-ack' }); } catch {}
+    return;
+  }
   const { id, fen4, depth, verbose, maxTimeMs, hintMove } = msg;
   try {
     const t0 = Date.now();
+    if (PROFILING_ENABLED) {
+        CURRENT_PROFILE = {
+        startNs: process.hrtime.bigint(),
+        evalTimeNs: 0n,
+        orderChildrenTimeNs: 0n,
+        quiesceTimeNs: 0n,
+        alphabetaTimeNs: 0n,
+        depthTimesNs: [],
+        ttGetCount: 0,
+        ttStoreCount: 0,
+        nullMoveCount: 0,
+        nodesAtEnd: 0,
+        evalCalls: 0,
+        moveGenTimeNs: 0n,
+        moveGenCalls: 0,
+        movesGenerated: 0,
+        evalMoveGenTimeNs: 0n,
+        evalMoveGenCalls: 0,
+        evalMovesGenerated: 0,
+        orderMoveGenTimeNs: 0n,
+        orderMoveGenCalls: 0,
+        orderMovesGenerated: 0
+      };
+      // Reset per-search move cache
+      MOVE_CACHE = new Map();
+    }
     const target = Math.max(1, depth|0);
     const deadline = maxTimeMs ? (Date.now() + Math.max(100, maxTimeMs|0)) : 0;
     let lastComplete = null;
     let depthReached = 0;
     let prevScore = null;
     for (let d = 1; d <= target; d++) {
+      const _depthStart = PROFILING_ENABLED && CURRENT_PROFILE ? process.hrtime.bigint() : null;
       // Aspiration windows around previous score
       let alpha = -Infinity, beta = Infinity;
       if (prevScore != null) {
@@ -1019,10 +1192,12 @@ parentPort.on('message', (msg) => {
       lastComplete = one;
       depthReached = d;
       prevScore = one ? one.score : prevScore;
+      if (_depthStart) CURRENT_PROFILE.depthTimesNs.push({ depth: d, ns: process.hrtime.bigint() - _depthStart });
     }
     if (!lastComplete) {
       // Return minimal info rather than failing hard, but flag early abort to help server retry logic
       parentPort.postMessage({ id, ok: true, best: null, score: 0, nodes: 0, depthReached: 0, abortedEarly: true, ms: Date.now() - t0 });
+      if (PROFILING_ENABLED && CURRENT_PROFILE) CURRENT_PROFILE = null;
       return;
     }
   const { best, score, nodes, bestLines, worstLines, fhCount, flCount, ttHits, lmrReductions, nullTries, nullCutoffs } = lastComplete;
@@ -1032,13 +1207,80 @@ parentPort.on('message', (msg) => {
   if (Math.abs(score) >= MATE_BASE - 1000) {
     mateDistance = MATE_BASE - Math.abs(score);
   }
+    if (PROFILING_ENABLED && CURRENT_PROFILE) CURRENT_PROFILE.nodesAtEnd = nodes;
   const payload = { id, ok: true, best, score, nodes, depthReached, fhCount, flCount, ttHits, lmrReductions, nullTries, nullCutoffs, mateDistance, ms: Date.now() - t0 };
-    if (bestLines) payload.bestLines = bestLines;
-    if (worstLines) payload.worstLines = worstLines;
+  if (bestLines) payload.bestLines = bestLines;
+  if (worstLines) payload.worstLines = worstLines;
+  if (verbose && lastComplete && Array.isArray(lastComplete.scored)) payload.scored = lastComplete.scored;
     parentPort.postMessage(payload);
+    if (PROFILING_ENABLED && CURRENT_PROFILE) {
+      try {
+        const endNs = process.hrtime.bigint();
+        const prof = CURRENT_PROFILE;
+        const toMs = (ns)=> Number(ns) / 1e6;
+        const summary = {
+          totalMs: toMs(endNs - prof.startNs).toFixed(2),
+          evalMs: toMs(prof.evalTimeNs).toFixed(2),
+          orderChildrenMs: toMs(prof.orderChildrenTimeNs).toFixed(2),
+          quiesceMs: toMs(prof.quiesceTimeNs).toFixed(2),
+          alphabetaMs: toMs(prof.alphabetaTimeNs).toFixed(2),
+          evalCalls: prof.evalCalls || 0,
+          moveGenMs: toMs(prof.moveGenTimeNs || 0n).toFixed(2),
+          moveGenCalls: prof.moveGenCalls || 0,
+          movesGenerated: prof.movesGenerated || 0,
+          evalMoveGenMs: toMs(prof.evalMoveGenTimeNs || 0n).toFixed(2),
+          evalMoveGenCalls: prof.evalMoveGenCalls || 0,
+          evalMovesGenerated: prof.evalMovesGenerated || 0,
+          orderMoveGenMs: toMs(prof.orderMoveGenTimeNs || 0n).toFixed(2),
+          orderMoveGenCalls: prof.orderMoveGenCalls || 0,
+          orderMovesGenerated: prof.orderMovesGenerated || 0,
+          ttGetCount: prof.ttGetCount,
+          ttStoreCount: prof.ttStoreCount,
+          nullMoveCount: prof.nullMoveCount,
+          nodes: prof.nodesAtEnd,
+          depthBreakdown: prof.depthTimesNs.map(d => ({ depth: d.depth, ms: toMs(d.ns).toFixed(2) }))
+        };
+        const lines = [];
+        lines.push('# Search Profiling Log');
+        lines.push(`totalMs=${summary.totalMs}`);
+        lines.push(`nodes=${summary.nodes}`);
+        lines.push(`evalMs=${summary.evalMs}`);
+        lines.push(`orderChildrenMs=${summary.orderChildrenMs}`);
+        lines.push(`alphabetaMs=${summary.alphabetaMs}`);
+        lines.push(`quiesceMs=${summary.quiesceMs}`);
+  lines.push(`evalCalls=${summary.evalCalls}`);
+  lines.push(`moveGenMs=${summary.moveGenMs}`);
+  lines.push(`moveGenCalls=${summary.moveGenCalls}`);
+  lines.push(`movesGenerated=${summary.movesGenerated}`);
+  lines.push(`evalMoveGenMs=${summary.evalMoveGenMs}`);
+  lines.push(`evalMoveGenCalls=${summary.evalMoveGenCalls}`);
+  lines.push(`evalMovesGenerated=${summary.evalMovesGenerated}`);
+  lines.push(`orderMoveGenMs=${summary.orderMoveGenMs}`);
+  lines.push(`orderMoveGenCalls=${summary.orderMoveGenCalls}`);
+  lines.push(`orderMovesGenerated=${summary.orderMovesGenerated}`);
+  lines.push(`ttGetCount=${summary.ttGetCount}`);
+        lines.push(`ttStoreCount=${summary.ttStoreCount}`);
+        lines.push(`nullMoveCount=${summary.nullMoveCount}`);
+        lines.push('depthBreakdown:');
+        for (const d of summary.depthBreakdown) lines.push(`  depth=${d.depth} ms=${d.ms}`);
+        lines.push('JSON:');
+        lines.push(JSON.stringify(summary, null, 2));
+        const logName = `search_profile_${Date.now()}_${id}.log`;
+        const logPath = pathJoinSafe(process.cwd(), 'logs', logName);
+        fs.writeFileSync(logPath, lines.join('\n'), 'utf8');
+      } catch (e) {
+        try { console.error('profiling log error', e); } catch {}
+      } finally {
+        CURRENT_PROFILE = null;
+      }
+    }
   } catch (e) {
     // Log for test visibility
     try { console.error('worker search error:', e && e.stack ? e.stack : e); } catch {}
     parentPort.postMessage({ id, ok: false, error: String(e) });
   }
 });
+
+function pathJoinSafe(base, sub, file) {
+  try { return require('path').join(base, sub, file); } catch { return base + '/' + sub + '/' + file; }
+}

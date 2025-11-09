@@ -237,7 +237,7 @@ async function main() {
   const sharedSlots = 1 << 17; // 131072
   const sharedSAB = new SharedArrayBuffer(sharedSlots * 2 * 4); // 2 int32 per slot
   for (let i = 0; i < workerCount; i++) {
-    workers.push(new Worker(workerPath, { workerData: { sharedSAB, sharedSLOTS: sharedSlots } }));
+    workers.push(new Worker(workerPath, { workerData: { sharedSAB, sharedSLOTS: sharedSlots, timestamp: process.env.TIMESTAMP_MODE === '1' } }));
   }
   const pending = new Map();
   for (const w of workers) {
@@ -347,6 +347,28 @@ async function main() {
       }, timeoutMs);
     });
   }
+
+  // Query current profiling status (best-effort): since workers reply asynchronously, we track last toggle locally.
+  let lastProfilingState = process.env.TIMESTAMP_MODE === '1';
+  // Toggle profiling (timestamp mode) endpoint: enables/disables runtime profiling in all workers.
+  // POST /api/profile/toggle { enabled: boolean }
+  app.post('/api/profile/toggle', (req, res) => {
+    try {
+      const { enabled } = req.body || {};
+      const want = !!enabled;
+      const id = Date.now();
+      for (const w of workers) {
+        w.postMessage({ type: 'profile-toggle', enabled: want, id });
+      }
+      lastProfilingState = want;
+      res.json({ ok: true, profilingEnabled: want });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: String(e) });
+    }
+  });
+  app.get('/api/profile/status', (req, res) => {
+    res.json({ ok: true, profilingEnabled: lastProfilingState });
+  });
 
   app.post('/api/engine/move', async (req, res) => {
     try {

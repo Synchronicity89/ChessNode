@@ -60,6 +60,9 @@
         <span class="status" id="status">Ready</span>
         <div style="margin-top:8px">
           <label><input type="checkbox" id="verbose" /> Verbose Search (show top & worst lines)</label>
+          <span style="margin-left:12px"></span>
+          <label title="Enable per-search profiling; logs written to local logs/ folder."><input type="checkbox" id="profiling" /> Profiling (timestamp mode)</label>
+          <span id="profiling-status" style="margin-left:6px; font-size:12px; color:#666"></span>
         </div>
       </div>
     </div>
@@ -73,10 +76,12 @@
         <button id="btn-copy-pgns">Copy All</button>
         <span id="copy-status" style="margin-left:8px; font-size:12px; color:#666"></span>
       </div>
-      <h3 style="margin-top:16px">Search Lines</h3>
-      <div id="pv" style="font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; white-space:pre; border:1px solid #eee; padding:6px; min-height:120px; background:#fff;"></div>
-      <h3 style="margin-top:16px">Engine Info</h3>
-      <div id="engine-info" style="font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; white-space:pre; border:1px solid #eee; padding:6px; min-height:80px; background:#fff;">(no data)</div>
+  <h3 style="margin-top:16px">Search Lines</h3>
+  <div style="font-size:11px; color:#555; margin-bottom:4px">Scores shown in lines are white-centric (W+ favors White).</div>
+  <div id="pv" style="font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; white-space:pre; border:1px solid #eee; padding:6px; min-height:120px; background:#fff;"></div>
+  <h3 style="margin-top:16px">Engine Info</h3>
+  <div style="font-size:11px; color:#555; margin-bottom:4px">Scores: scoreW is always white-centric; scoreSTM is from side-to-move perspective.</div>
+  <div id="engine-info" style="font-family: ui-monospace, Menlo, Consolas, monospace; font-size:12px; white-space:pre; border:1px solid #eee; padding:6px; min-height:80px; background:#fff;">(no data)</div>
     </div>
   </main>
 

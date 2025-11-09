@@ -10,6 +10,8 @@ import { Chess } from '/vendor/chess-esm.js';
   const pgnsEl = document.getElementById('pgns');
   const copyStatusEl = document.getElementById('copy-status');
   const pvEl = document.getElementById('pv');
+  const profilingCheckbox = document.getElementById('profiling');
+  const profilingStatusEl = document.getElementById('profiling-status');
   const sessionGames = []; // array of PGN strings for completed games
   let currentMoves = []; // SAN moves for current game
 
@@ -73,7 +75,7 @@ import { Chess } from '/vendor/chess-esm.js';
       if (recentSearches && recentSearches.length) {
         lineParts.push('--- recent ---');
         recentSearches.forEach((r,i)=>{
-    lineParts.push(`#${i+1} d=${r.depth} nodes=${r.nodes} ms=${r.ms} nps=${r.nps} score=${r.score} fh=${r.fh} fl=${r.fl} ttRate=${r.ttHitRate != null ? r.ttHitRate+'%' : 'n/a'} lmr=${r.lmrReductions||0} null=${r.nullTries||0}/${r.nullCutoffs||0}${r.nullCutRate!=null?('('+r.nullCutRate+'%)'):''}`);
+    lineParts.push(`#${i+1} d=${r.depth} nodes=${r.nodes} ms=${r.ms} nps=${r.nps} scoreW=${r.score} fh=${r.fh} fl=${r.fl} ttRate=${r.ttHitRate != null ? r.ttHitRate+'%' : 'n/a'} lmr=${r.lmrReductions||0} null=${r.nullTries||0}/${r.nullCutoffs||0}${r.nullCutRate!=null?('('+r.nullCutRate+'%)'):''}`);
         });
       }
       if (failReason) lineParts.push(`explanation: ${failReason}`);
@@ -263,7 +265,13 @@ import { Chess } from '/vendor/chess-esm.js';
           parts.push(`d=${d}${req && req !== d ? '/' + req : ''}`);
         }
         if (data.nodes != null) parts.push(`nodes=${data.nodes}`);
-        if (data.score != null) parts.push(`score=${data.score}`);
+        // Scores are white-centric; also show side-to-move perspective for clarity
+        const fmt = (n) => (n===0 ? '0.00' : (n>0?'+':'') + (Number(n).toFixed(2)));
+        if (data.score != null) {
+          const stm = game.turn() === 'w' ? data.score : -data.score;
+          parts.push(`scoreW=${fmt(data.score)}`);
+          parts.push(`scoreSTM=${fmt(stm)}`);
+        }
   const extra = parts.length ? ` [${parts.join(', ')}]` : '';
         log(src + ': ' + move.san + ' (' + best + ')' + extra);
         currentMoves.push(move.san);
@@ -445,4 +453,35 @@ import { Chess } from '/vendor/chess-esm.js';
   board = Chessboard('board', config);
 
   updateStatus();
+
+  // --- Profiling toggle logic ---
+  async function refreshProfilingStatus() {
+    try {
+      const r = await fetch('/api/profile/status');
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'status failed');
+      profilingCheckbox.checked = !!d.profilingEnabled;
+      profilingStatusEl.textContent = d.profilingEnabled ? 'ON' : 'OFF';
+    } catch (e) {
+      profilingStatusEl.textContent = 'error';
+    }
+  }
+  async function toggleProfiling() {
+    const want = profilingCheckbox.checked;
+    profilingStatusEl.textContent = '...';
+    try {
+      const r = await fetch('/api/profile/toggle', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: want }) });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error || 'toggle failed');
+      profilingStatusEl.textContent = d.profilingEnabled ? 'ON' : 'OFF';
+      log('Profiling ' + (d.profilingEnabled ? 'enabled' : 'disabled') + '. Logs will ' + (d.profilingEnabled ? 'be written to logs/.' : 'stop being written.'));
+    } catch (e) {
+      log('Profiling toggle error: ' + e.message);
+      // revert checkbox visual state to previous status
+      await refreshProfilingStatus();
+    }
+  }
+  profilingCheckbox.addEventListener('change', toggleProfiling);
+  // Initial status fetch
+  refreshProfilingStatus();
 })();
