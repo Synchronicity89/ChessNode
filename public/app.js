@@ -10,6 +10,8 @@ import { Chess } from '/vendor/chess-esm.js';
   const pgnsEl = document.getElementById('pgns');
   const copyStatusEl = document.getElementById('copy-status');
   const pvEl = document.getElementById('pv');
+  // Accumulated PV history text
+  let pvHistory = '';
   const profilingCheckbox = document.getElementById('profiling');
   const profilingStatusEl = document.getElementById('profiling-status');
   const sessionGames = []; // array of PGN strings for completed games
@@ -235,6 +237,11 @@ import { Chess } from '/vendor/chess-esm.js';
     const fen = game.fen().split(' ');
     // chess.js returns FEN with halfmove/fullmove; our server expects 4 fields
     const shortFen = fen.slice(0, 4).join(' ');
+    // Capture side-to-move and move number BEFORE the engine moves, for labeling PV output
+    const stmBefore = (fen[1] === 'w') ? 'White' : 'Black';
+    const moveCount = game.history().length; // number of plies already played in current game
+    const moveNo = Math.floor(moveCount / 2) + 1;
+    const moveTag = (fen[1] === 'w') ? `${moveNo}.` : `${moveNo}...`;
     const modeEl = document.getElementById('mode');
     const mode = modeEl ? modeEl.value : 'prefer-db';
     const pliesEl = document.getElementById('plies');
@@ -319,9 +326,13 @@ import { Chess } from '/vendor/chess-esm.js';
           }
         if (verbose) {
           if (data.bestLines || data.worstLines) {
-            renderPV(data);
+            renderPV(data, { stmLabel: stmBefore, moveTag });
           } else {
-            renderPVPlaceholder(data);
+            // Avoid polluting history with cache placeholders; only append when this
+            // response actually performed a search (engine sources)
+            if (data.source && data.source.startsWith('engine')) {
+              renderPVPlaceholder(data, { stmLabel: stmBefore, moveTag });
+            }
           }
         }
         if (game.isGameOver()) finalizeGame();
@@ -396,15 +407,38 @@ import { Chess } from '/vendor/chess-esm.js';
     pgnsEl.value = sessionGames.join('\n\n');
   }
 
-  function renderPV(data) {
-    const best = (data.bestLines || []).map((l, i) => `#${i+1} score=${l.score}  ${l.line}`).join('\n');
-    const worst = (data.worstLines || []).map((l, i) => `#${i+1} score=${l.score}  ${l.line}`).join('\n');
-    pvEl.textContent = `Best lines:\n${best || '(none)'}\n\nWorst lines:\n${worst || '(none)'}`;
+  function renderPV(data, meta) {
+    const fmtScore = (s) => {
+      if (s == null || Number.isNaN(Number(s))) return 'n/a';
+      const n = Number(s);
+      if (!Number.isFinite(n)) return 'n/a';
+      // Keep mate sentinel obvious; otherwise show 2 decimals
+      if (Math.abs(n) >= 99990) return String(n);
+      return (n === 0 ? '0.00' : (n > 0 ? '+' : '') + n.toFixed(2));
+    };
+    const best = (data.bestLines || []).map((l, i) => `#${i+1} score=${fmtScore(l.score)}  ${l.line}`).join('\n');
+    const worst = (data.worstLines || []).map((l, i) => `#${i+1} score=${fmtScore(l.score)}  ${l.line}`).join('\n');
+    // Determine side labeling more accurately: meta.stmLabel already holds side-to-move before engine moved.
+    // For clarity, show "for <side>" meaning the side that was to move when lines were generated.
+    const side = meta?.stmLabel || 'Side';
+    const moveTag = meta?.moveTag ? `${meta.moveTag} ` : '';
+    const header = `${moveTag}Best lines for ${side}:`;
+    const headerW = `${moveTag}Worst lines for ${side}:`;
+    const chunk = `${header}\n${best || '(none)'}\n\n${headerW}\n${worst || '(none)'}\n`;
+    pvHistory += (pvHistory ? '\n' : '') + chunk;
+    pvEl.textContent = pvHistory;
+    // auto-scroll to bottom
+    pvEl.scrollTop = pvEl.scrollHeight;
   }
 
-  function renderPVPlaceholder(data) {
+  function renderPVPlaceholder(data, meta) {
     const reason = data.explanation || 'No search lines available (book/DB move or shallow depth).';
-    pvEl.textContent = reason;
+    const side = meta?.stmLabel || 'Side';
+    const moveTag = meta?.moveTag ? `${meta.moveTag} ` : '';
+    const chunk = `${moveTag}Best/Worst lines for ${side}: ${reason}`;
+    pvHistory += (pvHistory ? '\n' : '') + chunk + '\n';
+    pvEl.textContent = pvHistory;
+    pvEl.scrollTop = pvEl.scrollHeight;
   }
 
   document.getElementById('btn-copy-pgns').addEventListener('click', () => {

@@ -55,8 +55,12 @@ async function main() {
     return v;
   }
   function cacheSet(fen4, payload) { searchCache.set(fen4, { ...payload, ts: now() }); }
-  async function searchAndCache(fen4, depth, verbose) {
-    const workerBudget = (process.env.SEARCH_WORKER_BUDGET_MS ? Number(process.env.SEARCH_WORKER_BUDGET_MS) : 0) || (8000 + depth * 700);
+  async function searchAndCache(fen4, depth, verbose, maxTimeMsOverride) {
+    // Default to a long search window unless explicitly overridden
+    const defaultSearchMs = Number(process.env.DEFAULT_SEARCH_MS || 60000);
+    const workerBudget = typeof maxTimeMsOverride === 'number'
+      ? Math.max(1000, maxTimeMsOverride)
+      : ((process.env.SEARCH_WORKER_BUDGET_MS ? Number(process.env.SEARCH_WORKER_BUDGET_MS) : 0) || defaultSearchMs);
     const r = await searchParallel(fen4, depth, verbose, workerBudget);
     if (r && r.ok && r.best) {
       cacheSet(fen4, { bestmove: r.best, score: r.score, nodes: r.nodes, depth: r.depthReached || depth, bestLines: r.bestLines, worstLines: r.worstLines });
@@ -335,9 +339,9 @@ async function main() {
       const w = workers[roundRobin++ % workers.length];
       pending.set(id, resolve);
       w.postMessage(payload);
-      // timeout safeguard
-      const base = Number(process.env.SEARCH_TIMEOUT_BASE_MS || 10000);
-      const per = Number(process.env.SEARCH_TIMEOUT_PER_DEPTH_MS || 3000);
+      // timeout safeguard (external): default base 60s, per-depth additive optional
+      const base = Number(process.env.SEARCH_TIMEOUT_BASE_MS || 60000);
+      const per = Number(process.env.SEARCH_TIMEOUT_PER_DEPTH_MS || 0);
       const timeoutMs = base + per * depth;
       setTimeout(() => {
         if (pending.has(id)) {
@@ -372,7 +376,7 @@ async function main() {
 
   app.post('/api/engine/move', async (req, res) => {
     try {
-      const { fen, mode, plies, verbose } = req.body || {};
+  const { fen, mode, plies, verbose, humanThinkMs } = req.body || {};
       if (!fen) return res.status(400).json({ ok: false, error: 'missing fen' });
       const modeEff = typeof mode === 'string' ? mode : 'prefer-db';
       const depth = Math.max(1, Math.min(10, parseInt(plies || '2', 10)));
@@ -427,8 +431,10 @@ async function main() {
       // No DB and no Book or engine-only: run parallel alpha-beta search for deeper plies, fallback to local negamax
       if (depth > 0) {
         if (depth > 3) {
-          // Provide worker its own time budget slightly below external timeout
-          let baseBudget = (process.env.SEARCH_WORKER_BUDGET_MS ? Number(process.env.SEARCH_WORKER_BUDGET_MS) : 0) || (8000 + depth * 700);
+          // Long default budget: 60s + optional human think time (overridable via env)
+          const defaultSearchMs = Number(process.env.DEFAULT_SEARCH_MS || 60000);
+          const humanMs = Math.max(0, Number(humanThinkMs || 0));
+          let baseBudget = (process.env.SEARCH_WORKER_BUDGET_MS ? Number(process.env.SEARCH_WORKER_BUDGET_MS) : 0) || (defaultSearchMs + humanMs);
           let workerBudget = adjustBudget(baseBudget, depth);
           let r = await searchParallel(fen, depth, verbose, workerBudget);
           // If worker aborted before completing any iteration, retry once with increased budget
@@ -481,13 +487,13 @@ async function main() {
             console.log(`Parallel search aborted early twice at depth=${depth}; falling back to shallow search.`);
           }
         }
-        const r = negamax(fen, Math.min(depth, 3));
+  const r = negamax(fen, Math.min(depth, 3));
         if (r.best) {
           cacheSet(fen4, { bestmove: r.best, score: r.score, nodes: r.explored, depth: Math.min(depth, 3) });
           return res.json({ ok: true, bestmove: r.best, source: 'engine-search', depth: Math.min(depth, 3), requestedDepth: depth, score: r.score, nodes: r.explored, mateDistance: r.mateDistance || null, explanation: 'Depth limited fallback search (<=3) used; multi-PV not generated (parallel search timed out or aborted early).', ms: null, nps: null, fhCount: null, flCount: null, ttHits: null, ttHitRate: null, sessionTotals: makeSessionTotals(), recentSearches: sessionStats.recent });
         }
       }
-      // Fallback to engine
+      // Fallback to external UCI engine
       await engine.setPositionFen(fen);
       const bestmove = await engine.go();
       res.json({ ok: true, bestmove, source: 'engine', bookCandidates, dbHits, ms: null, nps: null, fhCount: null, flCount: null, ttHits: null, ttHitRate: null, sessionTotals: makeSessionTotals(), recentSearches: sessionStats.recent });
@@ -518,21 +524,25 @@ async function main() {
   });
 
   // Ponder endpoint: when it's the human's turn at fen, pre-search all child positions (after human moves)
+  // Ponder during opponent's thinking time: pre-search children of current position
   app.post('/api/engine/ponder', async (req, res) => {
     try {
-      const { fen, plies, verbose } = req.body || {};
+      const { fen, plies, verbose, humanThinkMs } = req.body || {};
       if (!fen) return res.status(400).json({ ok: false, error: 'missing fen' });
       const depth = Math.max(1, Math.min(10, parseInt(plies || '2', 10)));
       const f4 = toFen4(fen);
       const children = listChildrenFen4(f4);
+      const defaultSearchMs = Number(process.env.DEFAULT_SEARCH_MS || 60000);
+      const humanMs = Math.max(0, Number(humanThinkMs || 0));
+      const ponderBudget = (process.env.SEARCH_WORKER_BUDGET_MS ? Number(process.env.SEARCH_WORKER_BUDGET_MS) : 0) || (defaultSearchMs + humanMs);
       // Fire-and-forget searches in parallel (bounded by worker pool naturally)
       for (const ch of children) {
         // skip if cached fresh and depth sufficient
         const c = cacheGet(ch.fen4);
         if (c && (c.depth || 0) >= depth) continue;
-        searchAndCache(ch.fen4, depth, !!verbose).catch(() => {});
+        searchAndCache(ch.fen4, depth, !!verbose, ponderBudget).catch(() => {});
       }
-      res.json({ ok: true, queued: children.length });
+      res.json({ ok: true, queued: children.length, budgetMs: ponderBudget });
     } catch (e) {
       res.status(500).json({ ok: false, error: String(e) });
     }

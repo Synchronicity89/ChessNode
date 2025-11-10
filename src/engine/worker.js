@@ -14,6 +14,8 @@ let CURRENT_PROFILE = null;
 // Per-search move generation cache (fen4 -> verbose move list). Reinitialized per search.
 let MOVE_CACHE = null;
 const MAX_MOVE_CACHE_ENTRIES = parseInt(process.env.MAX_MOVE_CACHE_ENTRIES || '50000', 10);
+// Per-search transition cache: fen4 -> array of {uci,san,fen4,isCap,isPromo,isCheck,captured,from,to,promotion}
+let TRANS_CACHE = null;
 
 let Chess;
 try { Chess = require('chess.js').Chess; } catch (e) { /* will throw on use */ }
@@ -562,23 +564,24 @@ function evaluateMaterial(fen4) {
   score -= whitePenalty;
   score += blackPenalty;
 
-  // Early king move penalty: if king has moved off its starting square while some castling rights remain,
-  // strongly discourage premature king walks. Scaled if opponent queen is missing (reduce impact).
-  function earlyKingMovePenalty(color) {
+  // King wander penalty: penalize uncastled king leaving start square regardless of rights status.
+  function kingWanderPenalty(color) {
     const kingStart = color === 'w' ? 'e1' : 'e8';
     const ksq = color === 'w' ? wKing : bKing;
     if (!ksq) return 0;
-    const hasRights = rights.includes(color === 'w' ? 'K' : 'k') || rights.includes(color === 'w' ? 'Q' : 'q');
-    if (hasRights && ksq !== kingStart) {
-      // base penalty ~3.0 pawns per user request (strongly discourage premature king walks)
-      return 3.0;
+    const castled = (color === 'w') ? (ksq === 'g1' || ksq === 'c1') : (ksq === 'g8' || ksq === 'c8');
+    if (castled) return 0;
+    if (ksq !== kingStart) {
+      const oppQueenPresent = hasQueen(color === 'w' ? 'b' : 'w');
+      const base = 2.2; // baseline penalty in pawns
+      return oppQueenPresent ? base : base * 0.6;
     }
     return 0;
   }
-  const wEarly = earlyKingMovePenalty('w') * (oppQueenMissingForWhite ? 0.5 : 1);
-  const bEarly = earlyKingMovePenalty('b') * (oppQueenMissingForBlack ? 0.5 : 1);
-  score -= wEarly;
-  score += bEarly;
+  const wWander = kingWanderPenalty('w');
+  const bWander = kingWanderPenalty('b');
+  score -= wWander; // white king wandering hurts white
+  score += bWander; // black king wandering helps white
 
   // Castling readiness (forward-looking incentive): reward retaining rights AND clear path pieces
   // to encourage timely castling before threats escalate. Scaled smaller than actual castling bonus.
@@ -701,10 +704,17 @@ function timeUp(deadline, nodes) {
   return Date.now() > deadline;
 }
 
-function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, deadline, ctx, ply, hintMove) {
+function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, deadline, ctx, ply, hintMove, horizonExtended=false) {
   const _pStart = PROFILING_ENABLED && CURRENT_PROFILE ? process.hrtime.bigint() : null;
   nodesObj.count++;
   if (timeUp(deadline, nodesObj)) return { score: 0, pv: [], aborted: true };
+  // Hard ply safeguard to prevent runaway recursion if extension logic malfunctions
+  const MAX_PLY = parseInt(process.env.MAX_PLY || '256', 10);
+  if ((ply|0) > MAX_PLY) {
+    const stm = fen4.split(/\s+/)[1];
+    const wEval = evaluateMaterial(fen4);
+    return { score: (stm === 'w') ? wEval : -wEval, pv: [], aborted: false };
+  }
   const chess = new Chess(ensureSix(fen4));
   const hash = zobristHashFen4(fen4);
   const alphaOrig = alpha;
@@ -719,14 +729,12 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
     beta = ttProbe.beta !== undefined ? ttProbe.beta : beta;
   }
   if (depth <= 0) {
-    // Horizon check extension: if side to move is in check at the horizon,
-    // extend by one ply instead of dropping directly into quiescence.
-    if (chess.isCheck()) {
-      depth = 1;
-    } else {
-      const q = quiesce(fen4, alpha, beta, nodesObj, deadline);
-      return q;
+    // Single-use horizon extension if in check; prevent infinite recursion by horizonExtended flag
+    if (chess.isCheck() && !horizonExtended) {
+      return alphabetaPV(fen4, 1, alpha, beta, captureParity, nodesObj, deadline, ctx, ply, hintMove, true);
     }
+    const q = quiesce(fen4, alpha, beta, nodesObj, deadline);
+    return q;
   }
   // Selective tactical extensions
   // 1. If previous move was a capture and position offers a direct recapture (SEE >= 0), extend +1
@@ -758,7 +766,10 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
       }
     }
   }
-  if (tacticalExtension) depth += tacticalExtension;
+  // IMPORTANT: do not mutate the original depth in-place for extensions; doing so can
+  // create non-decreasing depth propagation (infinite recursion) when every node extends.
+  // Instead compute an effective depth used for the remainder of this node only.
+  const effectiveDepth = depth + tacticalExtension;
   // Mate scoring: prefer faster mates and avoid horizon oddities.
   // Use a large magnitude and incorporate ply to favor shorter mates.
   if (chess.isCheckmate()) {
@@ -770,7 +781,7 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
   }
   if (chess.isDraw()) return { score: 0, pv: [], aborted: false };
   // Null-move pruning: if not in check and enough depth, try a null move
-  if (depth >= 3 && !chess.isCheck()) {
+  if (effectiveDepth >= 3 && !chess.isCheck()) {
     if (ctx && ctx.stats) ctx.stats.nullTry = (ctx.stats.nullTry || 0) + 1;
     // Quick non-pawn material presence check for the side to move
     let hasNonPawn = false;
@@ -778,8 +789,8 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
     if (hasNonPawn) {
       const parts = fen4.split(/\s+/);
       const nullFen = `${parts[0]} ${parts[1] === 'w' ? 'b' : 'w'} ${parts[2]} -`;
-  const R = depth > 5 ? 3 : 2;
-      const r = alphabetaPV(nullFen, depth - 1 - R, -beta, -beta + 1, 0, nodesObj, deadline, ctx, (ply|0)+1, null);
+  const R = effectiveDepth > 5 ? 3 : 2;
+  const r = alphabetaPV(nullFen, effectiveDepth - 1 - R, -beta, -beta + 1, 0, nodesObj, deadline, ctx, (ply|0)+1, null, false);
       if (!r.aborted) {
         const score = -r.score;
         if (score >= beta) {
@@ -796,7 +807,7 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
     const sh = sharedHintGet(hash);
     if (sh) prefer = packToUci(sh);
   }
-  const children = orderChildren(fen4, prefer, ctx, ply, depth, deadline); // pass preferred move (if any)
+  const children = orderChildren(fen4, prefer, ctx, ply, effectiveDepth, deadline); // pass preferred move (if any)
   if (children.length === 0) {
     // No legal moves list (should be handled earlier as mate/draw), but return static eval in STM perspective.
     const parts = fen4.split(/\s+/);
@@ -807,7 +818,7 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
     return res;
   }
   // modest branching control deeper
-  const maxB = depth > 7 ? 8 : depth > 5 ? 12 : depth > 3 ? 16 : 32;
+  const maxB = effectiveDepth > 7 ? 8 : effectiveDepth > 5 ? 12 : effectiveDepth > 3 ? 16 : 32;
   let bestScore = -Infinity;
   let bestPV = [];
   let bestMove = null;
@@ -818,28 +829,28 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
     if (consumed >= maxB && ch.isCheck) usedExtra++; else consumed++;
     // Late Move Reductions for quiet moves late in list
     let r;
-    const isQuiet = !ch.isCap && !ch.isPromo && !ch.isCheck; // never reduce checking moves
-    const late = i >= 3 && depth >= 3 && isQuiet;
+  const isQuiet = !ch.isCap && !ch.isPromo && !ch.isCheck; // never reduce checking moves
+  const late = i >= 3 && effectiveDepth >= 3 && isQuiet;
     if (late) {
       if (ctx && ctx.stats) ctx.stats.lmrReductions = (ctx.stats.lmrReductions || 0) + 1;
       const red = 1;
-      r = alphabetaPV(ch.fen4, depth - 1 - red, -alpha - 1, -alpha, ch.isCap ? captureParity + 1 : 0, nodesObj, deadline, ctx, (ply|0)+1, null);
+  r = alphabetaPV(ch.fen4, effectiveDepth - 1 - red, -alpha - 1, -alpha, ch.isCap ? captureParity + 1 : 0, nodesObj, deadline, ctx, (ply|0)+1, null, false);
       if (!r.aborted) {
         const sc = -r.score;
         if (sc > alpha) {
-          // re-search at full depth
-          r = alphabetaPV(ch.fen4, depth - 1, -beta, -alpha, ch.isCap ? captureParity + 1 : 0, nodesObj, deadline, ctx, (ply|0)+1, null);
+          // re-search at full depth (effectiveDepth - 1)
+          r = alphabetaPV(ch.fen4, effectiveDepth - 1, -beta, -alpha, ch.isCap ? captureParity + 1 : 0, nodesObj, deadline, ctx, (ply|0)+1, null, false);
         }
       }
     } else {
-      r = alphabetaPV(ch.fen4, depth - 1, -beta, -alpha, ch.isCap ? captureParity + 1 : 0, nodesObj, deadline, ctx, (ply|0)+1, null);
+  r = alphabetaPV(ch.fen4, effectiveDepth - 1, -beta, -alpha, ch.isCap ? captureParity + 1 : 0, nodesObj, deadline, ctx, (ply|0)+1, null, false);
     }
   if (r.aborted) return { score: 0, pv: [], aborted: true };
     const score = -r.score;
     const pv = [ch.san, ...r.pv];
     if (score >= beta) {
       // store lower-bound (fail-high)
-      ttStore(hash, depth, TT_LOWER, score, ch.uci);
+  ttStore(hash, effectiveDepth, TT_LOWER, score, ch.uci);
       sharedHintSet(hash, uciToPack(ch.uci), depth);
       // Killer and history updates for non-captures
       if (!ch.isCap) {
@@ -860,8 +871,8 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
   let flag = TT_EXACT;
   if (bestScore <= alphaOrig) flag = TT_UPPER; // failed low (didn't raise alpha)
   else if (bestScore >= beta) flag = TT_LOWER; // fail-high (already handled earlier, but just in case)
-  ttStore(hash, depth, flag, bestScore, bestMove);
-  if (bestMove) sharedHintSet(hash, uciToPack(bestMove), depth);
+  ttStore(hash, effectiveDepth, flag, bestScore, bestMove);
+  if (bestMove) sharedHintSet(hash, uciToPack(bestMove), effectiveDepth);
   if (bestScore <= alphaOrig) ctx.stats.fl++;
   // Return the real bestScore, not the current alpha (alpha may have overshot on fail-high pruning logic)
   const finalRes = { score: bestScore, pv: bestPV, aborted: false };
@@ -897,24 +908,35 @@ function quiesce(fen4, alpha, beta, nodesObj, deadline) {
 }
 
 function listCapturesOrdered(fen4) {
-  const base = new Chess(ensureSix(fen4));
-  const legal = movesCached(fen4, 'other');
+  const cachedT = TRANS_CACHE && TRANS_CACHE.get(fen4);
+  const legal = cachedT || movesCached(fen4, 'other');
   const out = [];
   for (const m of legal) {
-    if (!m.flags || !m.flags.includes('c')) continue;
-    const tmp = new Chess(ensureSix(fen4));
-    const made = tmp.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
-    if (!made) continue;
-    const cf = tmp.fen().split(' ').slice(0,4).join(' ');
+    const isCap = m.captured || (m.flags && m.flags.includes && m.flags.includes('c'));
+    if (!isCap) continue;
+    const cf = m.fen4 || (function(){ const tmp=new Chess(ensureSix(fen4)); const md=tmp.move({from:m.from,to:m.to,promotion:m.promotion||'q'}); return md ? tmp.fen().split(' ').slice(0,4).join(' ') : null; })();
+    if (!cf) continue;
     const val = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
-    const victim = val[made.captured] || 0;
-    const attacker = val[m.piece || 'p'] || 0;
+    const victim = val[m.captured || (m.made && m.made.captured) || 0] || 0;
+    const attacker = val[m.piece || (m.made && m.made.piece) || 'p'] || 0;
     const attackerEff = m.promotion ? Math.max(attacker, val['q']) : attacker;
     const see = victim - attackerEff;
     out.push({ fen4: cf, see });
   }
   out.sort((a, b) => b.see - a.see);
   return out;
+}
+
+// Mate-in-1 detector (side to move). Returns first found {uci,san} or null.
+function detectMateInOne(fen4) {
+  const legal = (TRANS_CACHE && TRANS_CACHE.get(fen4)) || movesCached(fen4, 'other');
+  for (const m of legal) {
+    const cf = m.fen4 || (function(){ const tmp=new Chess(ensureSix(fen4)); const md=tmp.move({from:m.from,to:m.to,promotion:m.promotion||'q'}); return md ? tmp.fen().split(' ').slice(0,4).join(' ') : null; })();
+    if (!cf) continue;
+    const tmp = new Chess(ensureSix(cf));
+    if (tmp.isCheckmate()) return { uci: m.from + m.to + (m.promotion || ''), san: m.san || '' };
+  }
+  return null;
 }
 
 function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Infinity, betaInit = Infinity, hintMove = null) {
@@ -933,14 +955,43 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
   const maxB = depth > 7 ? 8 : depth > 5 ? 12 : depth > 3 ? 24 : 64;
   const scored = [];
   let consumed = 0, extraChecks = 1, usedExtra = 0;
+  // If a child search hits deadline, switch to quick static-eval mode for remaining children to avoid total timeouts
+  let quickMode = false;
+  const deadlinePassed = () => deadline && Date.now() > deadline;
   for (let i = 0; i < moves.length && (consumed < maxB || (moves[i].isCheck && usedExtra < extraChecks)); i++) {
     const m = moves[i];
     if (consumed >= maxB && m.isCheck) usedExtra++; else consumed++;
-    const r = alphabetaPV(m.fen4, depth - 1, -beta, -alpha, m.isCap ? 1 : 0, nodesObj, deadline, ctx, 1, null);
-    if (r.aborted) return { aborted: true, nodes: nodesObj.count };
-    const sRootSide = -r.score; // score from current root side perspective (negamax property)
+    // Fast check: does this move allow opponent (child side) to mate immediately next ply?
+    let sRootSide; let pv;
+    const oppMateNext = !quickMode ? detectMateInOne(m.fen4) : null;
+    if (oppMateNext) {
+      const MATE_BASE = 100000;
+      sRootSide = -(MATE_BASE - 1); // catastrophic for root side
+      pv = [m.san, oppMateNext.san];
+    } else if ((quickMode || deadlinePassed()) && !(m.san === 'O-O' || m.san === 'O-O-O')) {
+      // Static-eval fast path to complete remaining root moves under time pressure
+      if (!quickMode) quickMode = true;
+      const wEval = evaluateMaterial(m.fen4);
+      const stmChild = m.fen4.split(/\s+/)[1];
+      const childStmScore = (stmChild === 'w') ? wEval : -wEval;
+      sRootSide = -childStmScore;
+      pv = [m.san];
+    } else {
+      const r = alphabetaPV(m.fen4, depth - 1, -beta, -alpha, m.isCap ? 1 : 0, nodesObj, deadline, ctx, 1, null);
+      if (r.aborted || deadlinePassed()) {
+        // Fallback static eval if child aborted: continue root iteration instead of aborting all
+        const wEval = evaluateMaterial(m.fen4);
+        const stmChild = m.fen4.split(/\s+/)[1];
+        const childStmScore = (stmChild === 'w') ? wEval : -wEval;
+        sRootSide = -childStmScore;
+        pv = [m.san];
+        quickMode = true;
+      } else {
+        sRootSide = -r.score;
+        pv = [m.san, ...r.pv];
+      }
+    }
     const sWhite = (rootTurn === 'w') ? sRootSide : -sRootSide; // convert to always white-centric
-    const pv = [m.san, ...r.pv];
     scored.push({ uci: m.uci, san: m.san, score: sWhite, pv });
   // Root move selection: maximize white-centric score for white to move, minimize it for black.
   // ROOT_FLIP allows choosing worst instead for testing (FLIP=-1).
@@ -950,7 +1001,7 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
     if (sRootSide > alpha) alpha = sRootSide; // alpha/beta remain in root-side perspective for pruning
   }
   // Assemble best/worst only if requested by caller
-  const base = { best, score: bestScoreWhite, nodes: nodesObj.count, scored, failLow: bestScoreRoot <= alphaOrig, failHigh: bestScoreRoot >= beta, fhCount: ctx.stats.fh, flCount: ctx.stats.fl, ttHits: ctx.stats.ttHits, lmrReductions: ctx.stats.lmrReductions, nullTries: ctx.stats.nullTry, nullCutoffs: ctx.stats.nullCut };
+  const base = { best, score: bestScoreWhite, nodes: nodesObj.count, scored, failLow: bestScoreRoot <= alphaOrig, failHigh: bestScoreRoot >= beta, fhCount: ctx.stats.fh, flCount: ctx.stats.fl, ttHits: ctx.stats.ttHits, lmrReductions: ctx.stats.lmrReductions, nullTries: ctx.stats.nullTry, nullCutoffs: ctx.stats.nullCut, aborted: deadlinePassed() };
   // Optional root move randomness among near-equal candidates
   const enableRand = process.env.ENABLE_MOVE_RANDOMNESS === '1';
   if (enableRand && scored.length > 1) {
@@ -985,9 +1036,23 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
     base.best = best;
   }
   if (!verbose) return base;
-  const sorted = [...scored].sort((a, b) => b.score - a.score);
+  // Sort PV candidates according to root side: White wants higher white-centric scores,
+  // Black wants lower white-centric scores.
+  let sorted;
+  if (rootTurn === 'w') {
+    sorted = [...scored].sort((a, b) => b.score - a.score);
+  } else {
+    sorted = [...scored].sort((a, b) => a.score - b.score);
+  }
   const top = sorted.slice(0, 3).map(x => ({ score: +x.score.toFixed(2), line: x.pv.join(' ') }));
-  const bot = sorted.slice(-3).map(x => ({ score: +x.score.toFixed(2), line: x.pv.join(' ') }));
+  // For worst, invert the sense: for White worst are the lowest scores; for Black worst are the highest
+  let worstSorted;
+  if (rootTurn === 'w') {
+    worstSorted = [...scored].sort((a, b) => a.score - b.score);
+  } else {
+    worstSorted = [...scored].sort((a, b) => b.score - a.score);
+  }
+  const bot = worstSorted.slice(0, 3).map(x => ({ score: +x.score.toFixed(2), line: x.pv.join(' ') }));
   return { ...base, bestLines: top, worstLines: bot };
 }
 
@@ -995,24 +1060,46 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
 function orderChildren(fen4, ttBest, ctx, ply, depth = 0, deadline) {
   const _pStart = PROFILING_ENABLED && CURRENT_PROFILE ? process.hrtime.bigint() : null;
   const base = new Chess(ensureSix(fen4));
-  let legal;
-  {
+  // Use transition cache if available; else compute and populate
+  let legal = TRANS_CACHE && TRANS_CACHE.get(fen4);
+  const fromCache = !!legal;
+  if (!legal) {
     legal = movesCached(fen4, 'order');
   }
   const out = [];
   const inCheckRoot = base.isCheck();
   let unsafeBudget = 6;
   for (const m of legal) {
-    const tmp = new Chess(ensureSix(fen4));
-    const made = tmp.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
-    if (!made) continue;
-    const cf = tmp.fen().split(' ').slice(0, 4).join(' ');
-    const givesCheck = !!tmp.isCheck();
-    const uci = m.from + m.to + (m.promotion || '');
-    const isCap = !!(made.captured) || (made.flags && made.flags.includes('c'));
-    const isPromo = !!m.promotion;
+    let skipMove = false;
+    let cf, givesCheck, uci, isCap, isPromo, made, from, to, promo, san;
+    if (fromCache && m.fen4) {
+      // Use cached transition
+      cf = m.fen4; givesCheck = !!m.isCheck; uci = m.uci || (m.from + m.to + (m.promotion || '')); isCap = !!m.isCap; isPromo = !!m.isPromo; from = m.from; to = m.to; promo = m.promotion; san = m.san; made = { captured: m.captured, to: m.to };
+    } else {
+      const tmp = new Chess(ensureSix(fen4));
+      made = tmp.move({ from: m.from, to: m.to, promotion: m.promotion || 'q' });
+      if (!made) continue;
+      cf = tmp.fen().split(' ').slice(0, 4).join(' ');
+      givesCheck = !!tmp.isCheck();
+      uci = m.from + m.to + (m.promotion || '');
+      isCap = !!(made.captured) || (made.flags && made.flags.includes && made.flags.includes('c'));
+      isPromo = !!m.promotion;
+      from = m.from; to = m.to; promo = m.promotion; san = m.san;
+      // Populate transition cache only once
+      if (TRANS_CACHE) {
+        let arr = TRANS_CACHE.get(fen4);
+        if (!arr) { arr = []; TRANS_CACHE.set(fen4, arr); }
+        if (!arr.length) {
+          // If this is the first time we see this fen4 in this search, seed with full list
+          // Create entries for all legal moves based on current loop context
+          // Note: We can't reconstruct all made results here cheaply; push one by one as computed
+        }
+        arr.push({ uci, san, fen4: cf, isCap, isPromo, isCheck: givesCheck, captured: made.captured, from, to, promotion: promo });
+      }
+    }
   // Keep ordering lightweight: avoid full eval here; rely on cap/SEE/killer/history/check bonuses
   const pre = 0;
+    let castleExtra = 0;
     // MVV-LVA-like: heavier bonus if capture high-value victim with low-value attacker
     let capBonus = 0;
     if (isCap && made.captured) {
@@ -1081,6 +1168,7 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0, deadline) {
         // Strong bonus to surface castling moves early; configurable.
         const CASTLE_BONUS = parseInt(process.env.CASTLE_BONUS || '1600', 10);
         unsafePenalty -= CASTLE_BONUS; // subtract from penalty bucket (acts as bonus)
+        castleExtra += 2000; // additional explicit bonus to guarantee early ordering surfacing
       } else {
         // If king moves off starting square while rights remain, push it far down.
         const kingStart = base.turn() === 'w' ? 'e1' : 'e8';
@@ -1094,22 +1182,40 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0, deadline) {
     // Avoid hanging the queen: penalize queen moves to squares immediately capturable by a cheaper piece
     if (m.piece === 'q' && !isCap) {
       let enemyMoves = movesCached(cf, 'order');
-      const toSq = made.to;
+      const toSq = to;
       const val = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
       for (const em of enemyMoves) {
         if (em.to === toSq && em.flags && em.flags.includes('c')) {
           const attackerVal = val[em.piece || 'p'] || 0;
           if (attackerVal <= 5) { // pawn/knight/bishop/rook
             // At deeper depths, skip entirely to reduce obvious blunders
-            if (depth >= 4) { continue; }
-            unsafePenalty += 1800; // push far down the move list
+            if (depth >= 4) { skipMove = true; }
+            else { unsafePenalty += 1800; } // push far down the move list
             break;
           }
         }
       }
     }
-    const weight = (uci === ttBest ? 5000 : 0) + checkBonus + evasionBonus - unsafePenalty + (isCap ? capBonus : 0) + seeBonus + (isPromo ? 80 : 0) + killerBonus + histBonus + pre;
-    out.push({ uci, san: m.san, fen4: cf, pre, isCap, isPromo, isCheck: givesCheck, weight });
+    // General blunder filter: quiet moves that place a piece en prise by a cheaper attacker
+    if (!isCap && m.piece !== 'k') {
+      let enemyMoves = movesCached(cf, 'order');
+      const toSq = to;
+      const val = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 100 };
+      const movedVal = val[m.piece || 'p'] || 0;
+      for (const em of enemyMoves) {
+        if (em.to === toSq && em.flags && em.flags.includes('c')) {
+          const attackerVal = val[em.piece || 'p'] || 0;
+          if (attackerVal < movedVal) {
+            if (depth >= 4) { skipMove = true; }
+            else { unsafePenalty += 1200; }
+            break;
+          }
+        }
+      }
+    }
+    if (skipMove) continue; // drop obviously losing quiet moves at deeper depths
+    const weight = (uci === ttBest ? 5000 : 0) + checkBonus + evasionBonus - unsafePenalty + castleExtra + (isCap ? capBonus : 0) + seeBonus + (isPromo ? 80 : 0) + killerBonus + histBonus + pre;
+    out.push({ uci, san: san || m.san, fen4: cf, pre, isCap, isPromo, isCheck: givesCheck, weight });
   }
   // Fallback: ensure at least one move if heuristics skipped all (e.g., all losing captures filtered)
   if (out.length === 0 && legal.length > 0) {
@@ -1138,7 +1244,10 @@ parentPort.on('message', (msg) => {
   const { id, fen4, depth, verbose, maxTimeMs, hintMove } = msg;
   try {
     const t0 = Date.now();
-    if (PROFILING_ENABLED) {
+  // Reset per-search caches
+  MOVE_CACHE = new Map();
+  TRANS_CACHE = new Map();
+  if (PROFILING_ENABLED) {
         CURRENT_PROFILE = {
         startNs: process.hrtime.bigint(),
         evalTimeNs: 0n,
@@ -1161,8 +1270,7 @@ parentPort.on('message', (msg) => {
         orderMoveGenCalls: 0,
         orderMovesGenerated: 0
       };
-      // Reset per-search move cache
-      MOVE_CACHE = new Map();
+      // per-search caches initialized above
     }
     const target = Math.max(1, depth|0);
     const deadline = maxTimeMs ? (Date.now() + Math.max(100, maxTimeMs|0)) : 0;
