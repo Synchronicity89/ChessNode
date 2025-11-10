@@ -5,7 +5,7 @@ const fs = require('fs');
 // Profiling flag (timestamp mode): off by default. Enable with env TIMESTAMP_MODE=1 or workerData.timestamp.
 // Made mutable to allow runtime toggling via 'profile-toggle' worker messages.
 let PROFILING_ENABLED = (function(){
-  try { if (workerData && typeof workerData.timestamp !== 'undefined') return !!workerData.timestamp; } catch {}
+  try { if (workerData && typeof workerData.timestamp !== 'undefined') return !!workerData.timestamp; } catch (e) { void 0; }
   return process.env.TIMESTAMP_MODE === '1';
 })();
 
@@ -26,7 +26,7 @@ const ROOT_FLIP = (function(){
       const v = Number(workerData.flip);
       return v === -1 ? -1 : 1;
     }
-  } catch {}
+  } catch (e) { void 0; }
   const v = parseInt(process.env.FLIP || '1', 10);
   return v === -1 ? -1 : 1;
 })();
@@ -306,6 +306,24 @@ function evaluateMaterial(fen4) {
   if (!hasPiece('g2','p','w')) score -= 0.3;
   if (!hasPiece('f7','p','b')) score += 0.5;
   if (!hasPiece('g7','p','b')) score += 0.3;
+  // Symmetric early flank pawn push penalties (mirror existing white-only logic): discourage a/h advances before castling
+  // pieceAt helper (defined once; earlier duplicate removed for lint)
+  function pieceAt(square) { const p = get(square); return p ? { t:p.type, c:p.color } : null; }
+  const whiteUncastled2 = !(wKing && (wKing === 'g1' || wKing === 'c1'));
+  const blackUncastled2 = !(bKing && (bKing === 'g8' || bKing === 'c8'));
+  if (whiteUncastled2) {
+    const flankSquaresW = ['a3','a4','h3','h4'];
+    let flankPushesW = 0;
+    for (const sq of flankSquaresW) { const p = pieceAt(sq); if (p && p.c==='w' && p.t==='p') flankPushesW++; }
+    if (flankPushesW) score -= Math.min(1.0, flankPushesW * 0.45);
+  }
+  if (blackUncastled2) {
+    // For black, mirror rank perspective: pushes to a6,a5,h6,h5 before castling weaken king/queen shelters
+    const flankSquaresB = ['a6','a5','h6','h5'];
+    let flankPushesB = 0;
+    for (const sq of flankSquaresB) { const p = pieceAt(sq); if (p && p.c==='b' && p.t==='p') flankPushesB++; }
+    if (flankPushesB) score += Math.min(1.0, flankPushesB * 0.45); // add (good for white) when black weakens
+  }
 
   // Additional king safety: attack ring pressure and open file exposure
   function kingRingSquares(ksq) {
@@ -442,7 +460,7 @@ function evaluateMaterial(fen4) {
           if (f==='d' || f==='e') add(0.1);
           if (r>=3 && r<=6) add(0.05);
           // Alignment with enemy K/Q on same file or rank with few blockers (<=2)
-          function blockersBetween(a, b) {
+          const blockersBetween = (a, b) => {
             if (!a || !b) return 99;
             const af = fileIdx(a[0]), ar = rankIdx(a[1]);
             const bf = fileIdx(b[0]), br = rankIdx(b[1]);
@@ -463,7 +481,7 @@ function evaluateMaterial(fen4) {
               return 99;
             }
             return count;
-          }
+          };
           const rookSq = sq.square;
           if (blockersBetween(rookSq, enemyKing) <= 2) add(0.05);
           if (blockersBetween(rookSq, enemyQueen) <= 2) add(0.05);
@@ -660,15 +678,43 @@ function evaluateMaterial(fen4) {
   // We already generated blackMoves and whiteMoves above (as attacks for king ring), reuse them.
   if (wQueenSq) {
     const canBeCaptured = blackMoves.some(m => m.to === wQueenSq && m.flags && m.flags.includes('c'));
-    if (canBeCaptured) score -= 6.0; // strong deterrent; full exchange resolution handled by search
+    if (canBeCaptured) score -= 12.0; // increased hanging queen penalty
   }
   if (bQueenSq) {
     const canBeCaptured = whiteMoves.some(m => m.to === bQueenSq && m.flags && m.flags.includes('c'));
-    if (canBeCaptured) score += 6.0;
+    if (canBeCaptured) score += 12.0;
   }
+  // Queen line-of-sight exposure: if enemy bishop has unobstructed path to queen square, penalize (pre-hanging threat)
+  function bishopLOSThreat(queenSq, enemyColor) {
+    if (!queenSq) return 0;
+    const qf = queenSq[0].charCodeAt(0) - 97;
+    const qr = parseInt(queenSq[1],10) - 1;
+    const dirs = [[1,1],[1,-1],[-1,1],[-1,-1]];
+    let penalty = 0;
+    outer: for (const [df,dr] of dirs) {
+      let f = qf + df, r = qr + dr, dist = 1;
+      while (f>=0 && f<8 && r>=0 && r<8) {
+        const sq = String.fromCharCode(97+f) + (r+1);
+        const p = get(sq);
+        if (p) {
+          if (p.type === 'b' && p.color === enemyColor) {
+            // enemy bishop can capture queen in one move (line clear)
+            const base = 3.0; // base penalty in pawns
+            penalty += base + Math.max(0, 2 - dist) * 0.5; // closer bishop slightly more serious
+          }
+          continue outer; // blocked by piece
+        }
+        f += df; r += dr; dist++;
+      }
+    }
+    return penalty;
+  }
+  // Apply LOS threats (white perspective): subtract if white queen exposed, add if black queen exposed
+  score -= bishopLOSThreat(wQueenSq, 'b');
+  score += bishopLOSThreat(bQueenSq, 'w');
 
   // Early flank pawn pushes (a/h files) before castling: discourage slow wing loosening
-  function pieceAt(square) { const p = get(square); return p ? { t:p.type, c:p.color } : null; }
+  // Duplicate pieceAt removed; using single definition above.
   const whiteUncastled = !isCastled('w');
   if (whiteUncastled) {
     const flankSquares = ['a3','a4','h3','h4'];
@@ -736,6 +782,13 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
     const q = quiesce(fen4, alpha, beta, nodesObj, deadline);
     return q;
   }
+  // Shallow futility pruning: if the static evaluation plus a small margin cannot raise alpha,
+  // prune this node. Apply only when not in check and at shallow depth.
+  // Compute static eval from side-to-move perspective (negamax-consistent).
+  const partsF = fen4.split(/\s+/);
+  const stmHere = partsF[1];
+  const standWhite = evaluateMaterial(fen4);
+  const standHere = (stmHere === 'w') ? standWhite : -standWhite;
   // Selective tactical extensions
   // 1. If previous move was a capture and position offers a direct recapture (SEE >= 0), extend +1
   // 2. If side to move has a checking move among top ordered children at shallow depth, extend +1 for that move only.
@@ -770,6 +823,23 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
   // create non-decreasing depth propagation (infinite recursion) when every node extends.
   // Instead compute an effective depth used for the remainder of this node only.
   const effectiveDepth = depth + tacticalExtension;
+  // Node-level futility (use effectiveDepth to decide). Avoid when in check or after extension.
+  if (effectiveDepth <= 2 && !chess.isCheck()) {
+    // Only apply futility if there are no tactical (capture or checking) moves available.
+    let anyTactical = false;
+    const legTmp = movesCached(fen4, 'other');
+    for (const mv of legTmp) {
+      const isCap = mv.captured || (mv.flags && mv.flags.includes && mv.flags.includes('c'));
+      if (isCap || (mv.san && mv.san.includes('+'))) { anyTactical = true; break; }
+    }
+    if (!anyTactical) {
+      const futMargin = effectiveDepth === 2 ? 1.25 : 0.75; // in pawns
+      if (standHere + futMargin <= alpha) {
+        if (ctx && ctx.stats) ctx.stats.futilityPrunes = (ctx.stats.futilityPrunes || 0) + 1;
+        return { score: alpha, pv: [], aborted: false };
+      }
+    }
+  }
   // Mate scoring: prefer faster mates and avoid horizon oddities.
   // Use a large magnitude and incorporate ply to favor shorter mates.
   if (chess.isCheckmate()) {
@@ -785,8 +855,20 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
     if (ctx && ctx.stats) ctx.stats.nullTry = (ctx.stats.nullTry || 0) + 1;
     // Quick non-pawn material presence check for the side to move
     let hasNonPawn = false;
-    for (const row of chess.board()) for (const sq of row) if (sq && sq.color === chess.turn() && sq.type !== 'p') { hasNonPawn = true; break; }
-    if (hasNonPawn) {
+    let nonPawnCount = 0, rookQueenCount = 0, minorCount = 0, pawnCount = 0;
+    for (const row of chess.board()) {
+      for (const sq of row) if (sq && sq.color === chess.turn()) {
+        if (sq.type === 'p') pawnCount++;
+        else {
+          hasNonPawn = true; nonPawnCount++;
+          if (sq.type === 'r' || sq.type === 'q') rookQueenCount++;
+          if (sq.type === 'n' || sq.type === 'b') minorCount++;
+        }
+      }
+    }
+    // Zugzwang-aware guard: skip null move in likely zugzwang endgames (K+P vs K, lone minor, etc.)
+    const likelyZugzwang = (!hasNonPawn) || (rookQueenCount === 0 && minorCount <= 1 && pawnCount <= 3);
+    if (hasNonPawn && !likelyZugzwang) {
       const parts = fen4.split(/\s+/);
       const nullFen = `${parts[0]} ${parts[1] === 'w' ? 'b' : 'w'} ${parts[2]} -`;
   const R = effectiveDepth > 5 ? 3 : 2;
@@ -800,6 +882,8 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
           return { score: beta, pv: [], aborted: false };
         }
       }
+    } else {
+      if (ctx && ctx.stats) ctx.stats.nullGuardSkips = (ctx.stats.nullGuardSkips || 0) + 1;
     }
   }
   let prefer = ttProbe.move || hintMove || null;
@@ -831,6 +915,14 @@ function alphabetaPV(fen4, depth, alpha, beta, captureParity = 0, nodesObj, dead
     let r;
   const isQuiet = !ch.isCap && !ch.isPromo && !ch.isCheck; // never reduce checking moves
   const late = i >= 3 && effectiveDepth >= 3 && isQuiet;
+    // Late Move Pruning (LMP): skip very late quiet moves at sufficient depth when not in check
+    if (effectiveDepth >= 5 && isQuiet && !chess.isCheck()) {
+      const lmpLimit = 2 + ((effectiveDepth * effectiveDepth) >> 3); // grows with depth
+      if (i >= lmpLimit) {
+        if (ctx && ctx.stats) ctx.stats.lmpSkips = (ctx.stats.lmpSkips || 0) + 1;
+        continue;
+      }
+    }
     if (late) {
       if (ctx && ctx.stats) ctx.stats.lmrReductions = (ctx.stats.lmrReductions || 0) + 1;
       const red = 1;
@@ -943,10 +1035,11 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
   // New root iteration increments generation to allow aging.
   TT_GENERATION++;
   const nodesObj = { count: 0 };
-  const ctx = { killers: [], history: new Map(), stats: { fh: 0, fl: 0, ttHits: 0, lmrReductions: 0, nullTry: 0, nullCut: 0 } };
+  const ctx = { killers: [], history: new Map(), stats: { fh: 0, fl: 0, ttHits: 0, lmrReductions: 0, nullTry: 0, nullCut: 0, futilityPrunes: 0, lmpSkips: 0, nullGuardSkips: 0, seeQuietSkips: 0 } };
   const moves = orderChildren(fen4, hintMove, ctx, 0, depth, deadline);
   const rootTurn = fen4.split(/\s+/)[1];
   let best = null;
+  let bestIndex = -1;
   let bestScoreWhite = -Infinity; // white-centric score of chosen move
   let bestScoreRoot = -Infinity;  // root-side perspective score used for alpha/beta logic
   let bestCmpScore = -Infinity; // comparison score (possibly flipped by ROOT_FLIP)
@@ -968,6 +1061,35 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
       const MATE_BASE = 100000;
       sRootSide = -(MATE_BASE - 1); // catastrophic for root side
       pv = [m.san, oppMateNext.san];
+    } else if (!quickMode && depth <= 3) {
+      // Mate threat depth-2 heuristic: if opponent can give check and then has mate next, punish.
+      let appliedThreat = false;
+      const leg = movesCached(m.fen4, 'other');
+      for (const their of leg) {
+        if (!(their.san && their.san.includes('+'))) continue; // only checking replies
+        const tmp = new Chess(ensureSix(m.fen4));
+        const made = tmp.move({ from: their.from, to: their.to, promotion: their.promotion || 'q' });
+        if (!made) continue;
+        const after = tmp.fen().split(' ').slice(0,4).join(' ');
+        const mate = detectMateInOne(after); // mate after opponent's checking move
+        if (mate) {
+          const MATE_BASE = 100000;
+          sRootSide = -(MATE_BASE - 2);
+          pv = [m.san, made.san, mate.san];
+          appliedThreat = true;
+          break;
+        }
+      }
+      if (!appliedThreat) {
+        // No immediate mate-in-two threat detected; continue with normal search path
+        const r = alphabetaPV(m.fen4, depth - 1, -beta, -alpha, m.isCap ? 1 : 0, nodesObj, deadline, ctx, 1, null);
+        if (r.aborted || deadlinePassed()) {
+          const wEval = evaluateMaterial(m.fen4);
+          const stmChild = m.fen4.split(/\s+/)[1];
+          const childStmScore = (stmChild === 'w') ? wEval : -wEval;
+          sRootSide = -childStmScore; pv = [m.san]; quickMode = true;
+        } else { sRootSide = -r.score; pv = [m.san, ...r.pv]; }
+      }
     } else if ((quickMode || deadlinePassed()) && !(m.san === 'O-O' || m.san === 'O-O-O')) {
       // Static-eval fast path to complete remaining root moves under time pressure
       if (!quickMode) quickMode = true;
@@ -997,13 +1119,23 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
   // ROOT_FLIP allows choosing worst instead for testing (FLIP=-1).
   const sideFactor = (rootTurn === 'w') ? 1 : -1; // black wants lower white-centric values
   const cmp = (sWhite * sideFactor) * ROOT_FLIP;
-    if (cmp > bestCmpScore) { bestCmpScore = cmp; bestScoreWhite = sWhite; bestScoreRoot = sRootSide; best = m.uci; }
+    if (cmp > bestCmpScore) {
+      bestCmpScore = cmp; bestScoreWhite = sWhite; bestScoreRoot = sRootSide; best = m.uci; bestIndex = i;
+    } else if (ROOT_FLIP === -1 && cmp === bestCmpScore) {
+      // Tie-break for FLIP=-1: prefer the move that is strictly worse for the side to move
+      const currentScaled = sWhite * sideFactor;
+      const bestScaled = bestScoreWhite * sideFactor;
+      if (currentScaled < bestScaled || (currentScaled === bestScaled && i > bestIndex)) {
+        bestCmpScore = cmp; bestScoreWhite = sWhite; bestScoreRoot = sRootSide; best = m.uci; bestIndex = i;
+      }
+    }
     if (sRootSide > alpha) alpha = sRootSide; // alpha/beta remain in root-side perspective for pruning
   }
   // Assemble best/worst only if requested by caller
-  const base = { best, score: bestScoreWhite, nodes: nodesObj.count, scored, failLow: bestScoreRoot <= alphaOrig, failHigh: bestScoreRoot >= beta, fhCount: ctx.stats.fh, flCount: ctx.stats.fl, ttHits: ctx.stats.ttHits, lmrReductions: ctx.stats.lmrReductions, nullTries: ctx.stats.nullTry, nullCutoffs: ctx.stats.nullCut, aborted: deadlinePassed() };
+  const base = { best, score: bestScoreWhite, nodes: nodesObj.count, scored, failLow: bestScoreRoot <= alphaOrig, failHigh: bestScoreRoot >= beta, fhCount: ctx.stats.fh, flCount: ctx.stats.fl, ttHits: ctx.stats.ttHits, lmrReductions: ctx.stats.lmrReductions, nullTries: ctx.stats.nullTry, nullCutoffs: ctx.stats.nullCut, futilityPrunes: ctx.stats.futilityPrunes || 0, lmpSkips: ctx.stats.lmpSkips || 0, nullGuardSkips: ctx.stats.nullGuardSkips || 0, seeQuietSkips: ctx.stats.seeQuietSkips || 0, aborted: deadlinePassed() };
   // Optional root move randomness among near-equal candidates
-  const enableRand = process.env.ENABLE_MOVE_RANDOMNESS === '1';
+  // Disable root move randomness when ROOT_FLIP is -1 to keep deterministic worst/best comparison for tests
+  const enableRand = (process.env.ENABLE_MOVE_RANDOMNESS === '1') && ROOT_FLIP === 1;
   if (enableRand && scored.length > 1) {
     const margin = parseFloat(process.env.ROOT_RANDOM_MARGIN || '0.15'); // pawns
     // Collect moves within margin of bestScore
@@ -1015,7 +1147,7 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
         if (seed === 0n) seed = 1n;
         global.__rootRandState = seed;
       }
-      function rand64() {
+      const rand64 = () => {
         let x = global.__rootRandState;
         // xorshift64* variant
         x ^= x << 13n;
@@ -1023,7 +1155,7 @@ function searchRootOnce(fen4, depth, verbose = false, deadline, alphaInit = -Inf
         x ^= x << 17n;
         global.__rootRandState = x & ((1n<<63n)-1n);
         return Number(global.__rootRandState & 0xFFFFFFFFn);
-      }
+      };
       const idx = rand64() % near.length;
       const choice = near[idx];
       base.best = choice.uci;
@@ -1189,7 +1321,7 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0, deadline) {
           const attackerVal = val[em.piece || 'p'] || 0;
           if (attackerVal <= 5) { // pawn/knight/bishop/rook
             // At deeper depths, skip entirely to reduce obvious blunders
-            if (depth >= 4) { skipMove = true; }
+            if (depth >= 4) { skipMove = true; if (ctx && ctx.stats) ctx.stats.seeQuietSkips = (ctx.stats.seeQuietSkips || 0) + 1; }
             else { unsafePenalty += 1800; } // push far down the move list
             break;
           }
@@ -1206,7 +1338,7 @@ function orderChildren(fen4, ttBest, ctx, ply, depth = 0, deadline) {
         if (em.to === toSq && em.flags && em.flags.includes('c')) {
           const attackerVal = val[em.piece || 'p'] || 0;
           if (attackerVal < movedVal) {
-            if (depth >= 4) { skipMove = true; }
+            if (depth >= 4) { skipMove = true; if (ctx && ctx.stats) ctx.stats.seeQuietSkips = (ctx.stats.seeQuietSkips || 0) + 1; }
             else { unsafePenalty += 1200; }
             break;
           }
@@ -1238,7 +1370,7 @@ parentPort.on('message', (msg) => {
   if (msg.type === 'profile-toggle') {
     PROFILING_ENABLED = !!msg.enabled;
     // Acknowledge toggle
-    try { parentPort.postMessage({ id: msg.id || null, ok: true, profilingEnabled: PROFILING_ENABLED, type: 'profile-toggle-ack' }); } catch {}
+  try { parentPort.postMessage({ id: msg.id || null, ok: true, profilingEnabled: PROFILING_ENABLED, type: 'profile-toggle-ack' }); } catch (e) { /* ignore ack error */ }
     return;
   }
   const { id, fen4, depth, verbose, maxTimeMs, hintMove } = msg;
@@ -1272,7 +1404,14 @@ parentPort.on('message', (msg) => {
       };
       // per-search caches initialized above
     }
-    const target = Math.max(1, depth|0);
+    let target = Math.max(1, depth|0);
+    // Dynamic opening depth bump: in early phase ensure a minimum depth to see basic tactics
+    try {
+      const moveCount = parseInt((fen4.split(/\s+/)[5] || '0'), 10);
+      const earlyPhase = moveCount < 12; // before full development
+      const minOpeningDepth = parseInt(process.env.MIN_OPENING_DEPTH || '4', 10);
+      if (earlyPhase && target < minOpeningDepth) target = minOpeningDepth;
+    } catch (e) { /* ignore moveCount parsing */ }
     const deadline = maxTimeMs ? (Date.now() + Math.max(100, maxTimeMs|0)) : 0;
     let lastComplete = null;
     let depthReached = 0;
@@ -1317,6 +1456,13 @@ parentPort.on('message', (msg) => {
   }
     if (PROFILING_ENABLED && CURRENT_PROFILE) CURRENT_PROFILE.nodesAtEnd = nodes;
   const payload = { id, ok: true, best, score, nodes, depthReached, fhCount, flCount, ttHits, lmrReductions, nullTries, nullCutoffs, mateDistance, ms: Date.now() - t0 };
+  // Include additional pruning stats from lastComplete when available
+  if (lastComplete) {
+    if (typeof lastComplete.futilityPrunes === 'number') payload.futilityPrunes = lastComplete.futilityPrunes;
+    if (typeof lastComplete.lmpSkips === 'number') payload.lmpSkips = lastComplete.lmpSkips;
+    if (typeof lastComplete.nullGuardSkips === 'number') payload.nullGuardSkips = lastComplete.nullGuardSkips;
+    if (typeof lastComplete.seeQuietSkips === 'number') payload.seeQuietSkips = lastComplete.seeQuietSkips;
+  }
   if (bestLines) payload.bestLines = bestLines;
   if (worstLines) payload.worstLines = worstLines;
   if (verbose && lastComplete && Array.isArray(lastComplete.scored)) payload.scored = lastComplete.scored;
@@ -1377,14 +1523,14 @@ parentPort.on('message', (msg) => {
         const logPath = pathJoinSafe(process.cwd(), 'logs', logName);
         fs.writeFileSync(logPath, lines.join('\n'), 'utf8');
       } catch (e) {
-        try { console.error('profiling log error', e); } catch {}
+  try { console.error('profiling log error', e); } catch (logErr) { /* suppressed */ }
       } finally {
         CURRENT_PROFILE = null;
       }
     }
   } catch (e) {
     // Log for test visibility
-    try { console.error('worker search error:', e && e.stack ? e.stack : e); } catch {}
+  try { console.error('worker search error:', e && e.stack ? e.stack : e); } catch (logErr) { /* suppressed */ }
     parentPort.postMessage({ id, ok: false, error: String(e) });
   }
 });

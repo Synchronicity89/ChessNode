@@ -42,6 +42,10 @@ import { Chess } from '/vendor/chess-esm.js';
         nullCutoffs,
         nullCutRate,
         mateDistance,
+        futilityPrunes,
+        lmpSkips,
+        nullGuardSkips,
+        seeQuietSkips,
         sessionTotals,
         recentSearches,
         failReason,
@@ -63,6 +67,10 @@ import { Chess } from '/vendor/chess-esm.js';
         if (nullTries != null) lineParts.push(`nullTries: ${nullTries}`);
         if (nullCutoffs != null) lineParts.push(`nullCutoffs: ${nullCutoffs}`);
         if (nullCutRate != null) lineParts.push(`nullCutRate(%): ${nullCutRate}`);
+        if (futilityPrunes != null) lineParts.push(`futilityPrunes: ${futilityPrunes}`);
+        if (lmpSkips != null) lineParts.push(`lmpSkips: ${lmpSkips}`);
+        if (nullGuardSkips != null) lineParts.push(`nullGuardSkips: ${nullGuardSkips}`);
+        if (seeQuietSkips != null) lineParts.push(`seeQuietSkips: ${seeQuietSkips}`);
       if (sessionTotals) {
         lineParts.push('--- totals ---');
         lineParts.push(`searches: ${sessionTotals.searches}`);
@@ -73,11 +81,15 @@ import { Chess } from '/vendor/chess-esm.js';
         lineParts.push(`totalFl: ${sessionTotals.fl}`);
         lineParts.push(`totalTtHits: ${sessionTotals.ttHits}`);
         if (sessionTotals.ttHitRate != null) lineParts.push(`ttHitRateCum(%): ${sessionTotals.ttHitRate}`);
+        if (sessionTotals.futilityPrunes != null) lineParts.push(`totalFutilityPrunes: ${sessionTotals.futilityPrunes}`);
+        if (sessionTotals.lmpSkips != null) lineParts.push(`totalLmpSkips: ${sessionTotals.lmpSkips}`);
+        if (sessionTotals.nullGuardSkips != null) lineParts.push(`totalNullGuardSkips: ${sessionTotals.nullGuardSkips}`);
+        if (sessionTotals.seeQuietSkips != null) lineParts.push(`totalSeeQuietSkips: ${sessionTotals.seeQuietSkips}`);
       }
       if (recentSearches && recentSearches.length) {
         lineParts.push('--- recent ---');
         recentSearches.forEach((r,i)=>{
-    lineParts.push(`#${i+1} d=${r.depth} nodes=${r.nodes} ms=${r.ms} nps=${r.nps} scoreW=${r.score} fh=${r.fh} fl=${r.fl} ttRate=${r.ttHitRate != null ? r.ttHitRate+'%' : 'n/a'} lmr=${r.lmrReductions||0} null=${r.nullTries||0}/${r.nullCutoffs||0}${r.nullCutRate!=null?('('+r.nullCutRate+'%)'):''}`);
+    lineParts.push(`#${i+1} d=${r.depth} nodes=${r.nodes} ms=${r.ms} nps=${r.nps} scoreW=${r.score} fh=${r.fh} fl=${r.fl} ttRate=${r.ttHitRate != null ? r.ttHitRate+'%' : 'n/a'} lmr=${r.lmrReductions||0} null=${r.nullTries||0}/${r.nullCutoffs||0}${r.nullCutRate!=null?('('+r.nullCutRate+'%)'):''} fut=${r.futilityPrunes||0} lmp=${r.lmpSkips||0} ngSkip=${r.nullGuardSkips||0} seeQuietSkip=${r.seeQuietSkips||0}`);
         });
       }
       if (failReason) lineParts.push(`explanation: ${failReason}`);
@@ -300,6 +312,10 @@ import { Chess } from '/vendor/chess-esm.js';
                 nullCutoffs: data.nullCutoffs,
                 nullCutRate: data.nullCutRate,
                 ttHitRate: data.ttHitRate,
+                futilityPrunes: data.futilityPrunes,
+                lmpSkips: data.lmpSkips,
+                nullGuardSkips: data.nullGuardSkips,
+                seeQuietSkips: data.seeQuietSkips,
                 sessionTotals: data.sessionTotals,
                 recentSearches: data.recentSearches,
                 failReason: data.explanation,

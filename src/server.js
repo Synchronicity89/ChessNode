@@ -261,6 +261,10 @@ async function main() {
     totalLmrReductions: 0,
     totalNullTries: 0,
     totalNullCutoffs: 0,
+    totalFutilityPrunes: 0,
+    totalLmpSkips: 0,
+    totalNullGuardSkips: 0,
+    totalSeeQuietSkips: 0,
     recent: [] // last few searches
   };
   function recordSearchStats(r) {
@@ -274,6 +278,10 @@ async function main() {
     sessionStats.totalLmrReductions += (r.lmrReductions || 0);
     sessionStats.totalNullTries += (r.nullTries || 0);
     sessionStats.totalNullCutoffs += (r.nullCutoffs || 0);
+  sessionStats.totalFutilityPrunes += (r.futilityPrunes || 0);
+  sessionStats.totalLmpSkips += (r.lmpSkips || 0);
+  sessionStats.totalNullGuardSkips += (r.nullGuardSkips || 0);
+  sessionStats.totalSeeQuietSkips += (r.seeQuietSkips || 0);
     const ms = r.ms || 0;
     const nps = ms > 0 ? Math.round((r.nodes / ms) * 1000) : 0;
     const ttHitRate = (r.nodes > 0 && r.ttHits >= 0) ? +(r.ttHits / r.nodes * 100).toFixed(1) : null;
@@ -292,6 +300,10 @@ async function main() {
       nullTries: r.nullTries || 0,
       nullCutoffs: r.nullCutoffs || 0,
       nullCutRate
+      , futilityPrunes: r.futilityPrunes || 0
+      , lmpSkips: r.lmpSkips || 0
+      , nullGuardSkips: r.nullGuardSkips || 0
+      , seeQuietSkips: r.seeQuietSkips || 0
     });
     if (sessionStats.recent.length > 3) sessionStats.recent.length = 3;
   }
@@ -311,6 +323,10 @@ async function main() {
       nullTries: sessionStats.totalNullTries,
       nullCutoffs: sessionStats.totalNullCutoffs,
       nullCutRate: sessionStats.totalNullTries > 0 ? +(sessionStats.totalNullCutoffs / sessionStats.totalNullTries * 100).toFixed(1) : null
+      , futilityPrunes: sessionStats.totalFutilityPrunes
+      , lmpSkips: sessionStats.totalLmpSkips
+      , nullGuardSkips: sessionStats.totalNullGuardSkips
+      , seeQuietSkips: sessionStats.totalSeeQuietSkips
     };
   }
   let nextReqId = 1;
@@ -472,6 +488,10 @@ async function main() {
               nullCutoffs: r.nullCutoffs,
               nullCutRate: (r.nullTries > 0) ? +(r.nullCutoffs / r.nullTries * 100).toFixed(1) : null,
               mateDistance: r.mateDistance != null ? r.mateDistance : null,
+                futilityPrunes: r.futilityPrunes || 0,
+                lmpSkips: r.lmpSkips || 0,
+                nullGuardSkips: r.nullGuardSkips || 0,
+                seeQuietSkips: r.seeQuietSkips || 0,
               sessionTotals: makeSessionTotals(),
               recentSearches: sessionStats.recent
             };
@@ -514,6 +534,10 @@ async function main() {
       sessionStats.totalLmrReductions = 0;
       sessionStats.totalNullTries = 0;
       sessionStats.totalNullCutoffs = 0;
+      sessionStats.totalFutilityPrunes = 0;
+      sessionStats.totalLmpSkips = 0;
+      sessionStats.totalNullGuardSkips = 0;
+      sessionStats.totalSeeQuietSkips = 0;
       sessionStats.recent = [];
       // Clear in-memory search cache as well
       searchCache.clear();
