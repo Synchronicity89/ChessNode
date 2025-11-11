@@ -2,6 +2,7 @@
 (function(){
   const moveListEl = $('#moveList');
   let ply = 1;
+  let cfg = (window.EngineConfig && window.EngineConfig.load()) || null;
 
   function addMove(san) {
     const li = $('<li>').text(ply + '. ' + san);
@@ -27,7 +28,18 @@
   setInterval(() => {
     const side = $('#sideSelect').val();
     if (side === 'observe') {
-      addMove('e4 (simulated)');
+      // Use config randomness to vary the simulated move text slightly
+      const r = (cfg?.search?.randomness ?? 0) / 100;
+      const moves = ['e4','d4','c4','Nf3'];
+      const pick = Math.random() < r ? Math.floor(Math.random()*moves.length) : 0;
+      addMove(moves[pick] + ' (simulated)');
     }
   }, 5000);
+
+  // Apply default depth from config if present
+  $(function(){
+    if (cfg?.search?.maxDepth) {
+      $('#depth').val(String(cfg.search.maxDepth));
+    }
+  });
 })();

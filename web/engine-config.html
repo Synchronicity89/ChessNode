@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Engine Configuration</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header>
+    <h1>Engine Configuration</h1>
+    <nav>
+      <a href="index.html">Play</a>
+      <a href="engine-config.html">Config</a>
+      <a href="engine-dev.html">Dev</a>
+    </nav>
+  </header>
+  <main class="layout config">
+    <section class="config-panel">
+      <h2>Search Controls</h2>
+      <form id="engineConfigForm">
+        <label>Max Depth
+          <input type="number" name="maxDepth" min="1" max="99" value="12" />
+        </label>
+        <label>Time Limit (ms)
+          <input type="number" name="timeMs" min="0" value="3000" />
+        </label>
+        <label>Mode
+          <select name="mode">
+            <option value="best">Play Best</option>
+            <option value="drawish">Prefer Drawish Lines</option>
+            <option value="explore">Exploration (More Variety)</option>
+          </select>
+        </label>
+        <label>Enable Null Move
+          <input type="checkbox" name="nullMove" checked />
+        </label>
+        <label>Enable LMR
+          <input type="checkbox" name="lmr" checked />
+        </label>
+        <label>Enable Futility
+          <input type="checkbox" name="futility" checked />
+        </label>
+        <label>Aspiration Window (centipawns)
+          <input type="number" name="aspWindow" min="0" value="75" />
+        </label>
+        <label>Randomness (%)
+          <input type="number" name="randomPct" min="0" max="100" value="0" />
+        </label>
+        <label>Stop on Mate Found
+          <input type="checkbox" name="stopOnMate" checked />
+        </label>
+        <fieldset>
+          <legend>Draw Preference Weights (0–100)</legend>
+          <label>Repetition
+            <input type="number" name="drawRepetition" min="0" max="100" value="30" />
+          </label>
+          <label>Material Simplification
+            <input type="number" name="drawSimplify" min="0" max="100" value="20" />
+          </label>
+          <label>King Safety Over Aggression
+            <input type="number" name="drawSafety" min="0" max="100" value="10" />
+          </label>
+        </fieldset>
+        <button type="button" id="saveConfig">Save to Cookie</button>
+        <button type="button" id="loadConfig">Load from Cookie</button>
+        <button type="button" id="clearConfig">Clear Cookie</button>
+        <button type="button" id="exportConfig">Export Text</button>
+        <button type="button" id="importConfig">Import Text</button>
+        <textarea id="configText" placeholder="Paste exported configuration here" style="width:100%;height:120px;margin-top:8px;"></textarea>
+      </form>
+      <div id="configStatus" style="margin-top:8px;font-weight:bold;"></div>
+    </section>
+    <aside class="help">
+      <h2>How It Works</h2>
+      <p>This page stores your engine configuration locally (cookie) and can export/import a portable text block. GitHub Pages hosting is static; your choices shape how the in-browser engine operates when you return to the Play page.</p>
+      <p>No server storage occurs. Clearing cookies or using private browsing may remove your saved configuration—export if you need portability.</p>
+      <h3>Drawish Mode</h3>
+      <p>In drawish mode future heuristics will bias toward stability, simplification, and avoiding risky imbalance. For now this is just a flag recorded in the configuration.</p>
+      <h3>Exploration Mode</h3>
+      <p>Encourages varied move choices (e.g., higher randomness) for analysis or training scenarios.</p>
+    </aside>
+  </main>
+  <script src="js/host-capabilities.js"></script>
+  <script src="js/ui-config.js"></script>
+</body>
+</html>

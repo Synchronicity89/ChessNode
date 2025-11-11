@@ -27,6 +27,7 @@ Human guidance and orchestration remain central — the AI produces components, 
 
 - Play UI: https://synchronicity89.github.io/ChessNode/
 - Developer UI: https://synchronicity89.github.io/ChessNode/engine-dev.html
+- Config UI: https://synchronicity89.github.io/ChessNode/engine-config.html
 
 Notes
 - Pages is published via a CI workflow that builds the WASM artifacts on GitHub Actions; no build products are committed to the repository. See `.github/workflows/deploy-pages.yml` and BUILDING.md for details.
@@ -105,8 +106,10 @@ Notes
 
 - web/: Pure browser runtime (no Node, no bundlers). Uses HTML/CSS/jQuery/vanilla JS only.
    - index.html: Play vs engine, engine vs engine, optional headless mode for speed testing.
+   - engine-config.html: Public configuration page (saves to cookie/localStorage, export/import as text).
    - engine-dev.html: Visual programming/configuration surface to assemble engine modules and parameters.
    - js/ui-board.js: Board rendering, interaction, and PGN move I/O.
+   - js/ui-config.js: Manages config schema, save/load to cookie/localStorage, import/export text.
    - js/ui-devtools.js: Developer controls, component selection, wiring, and telemetry panels.
    - js/ui-engine-bridge.js: Thin FFI layer that marshals data between JS and the WASM engine, plus init/lifecycle.
    - wasm/engine.wasm: The compiled engine artifact produced by the engine build.
@@ -169,6 +172,43 @@ The resulting configuration is serialized into a structured JSON meta-file that 
     - A test suite verifying correctness against expected input-output behaviors.
 4. The developer plugs the new component into the engine using the config page.
 5. The system recompiles to WASM and Native forms automatically.
+
+---
+
+### Running AI actions on GitHub Pages
+
+The "AI Actions" buttons in `engine-dev.html` are intentionally serverless-friendly:
+- On GitHub Pages they open a pre-filled GitHub Issue rather than calling an API with secrets.
+- A future GitHub Actions workflow can watch for `ai-request` labeled issues and auto-generate code & tests in a PR using stored secrets.
+- No secret keys are exposed to the browser; everything sensitive remains in CI or a private backend.
+
+Alternative integration patterns:
+- Local gateway: run a local tool with your API key; the UI targets `http://localhost:<port>` during development only.
+- Serverless function: deploy a small authenticated endpoint (Cloudflare Workers / Netlify / Vercel) that receives structured prompts and returns generated components.
+- Offline model: integrate a lightweight in-browser model (WebGPU/WASM) for small heuristic modules without external calls.
+
+This prevents accidental key leaks while keeping the workflow transparent: idea → issue → automated PR → review → merge.
+
+---
+
+### Issue-driven AI workflow (automation)
+
+How it works:
+- The "AI Actions" buttons open a pre-filled GitHub Issue labeled `ai-request`.
+- A GitHub Actions workflow (`.github/workflows/ai-issue-autopilot.yml`) listens for such issues.
+- The workflow creates a branch, scaffolds placeholder code/tests, pushes it, and opens a Pull Request.
+- You (or future automation) replace the placeholder with generated C++/tests and iterate in the PR.
+
+How to use it:
+1. Open `engine-dev.html` (locally or via GitHub Pages) and describe the request in the "Instruction Console".
+2. Click one of the AI Actions (e.g., "Add New Evaluation Module"). A GitHub Issue opens with your prompt.
+3. Submit the Issue. The `ai-issue-autopilot` workflow will create a PR branch and link it back on the Issue.
+4. Edit the branch (commit real implementation/tests), or connect a future generation workflow to populate the PR.
+5. Run CI (build/tests) and merge when ready.
+
+Security & portability:
+- No API keys in the browser or repository. Future AI integrations should run in Actions using repo/environment secrets.
+- The scaffolding is cross-platform and follows the repository structure.
 
 ---
 

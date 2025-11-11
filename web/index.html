@@ -10,6 +10,12 @@
 <body>
   <header>
     <h1>Chess Play</h1>
+    <nav>
+      <a href="index.html">Play</a>
+      <a href="engine-config.html">Config</a>
+      <a href="engine-explorer.html">Explorer</a>
+      <a href="engine-dev.html">Dev</a>
+    </nav>
   </header>
   <main class="layout">
     <section class="board-panel">
@@ -42,14 +48,16 @@
       <h2>Score</h2>
       <div id="score">--</div>
       <div class="io">
-        <button id="savePgn">Save PGN</button>
-        <button id="loadPgn">Load PGN</button>
+        <button id="savePgn" data-pages-incompatible title="Saves to local file (not available on static host)">Save PGN</button>
+        <button id="loadPgn" data-pages-incompatible title="Loads from local file (not available on static host)">Load PGN</button>
         <button id="loadFen">Load FEN</button>
         <textarea id="ioText" placeholder="PGN or FEN here"></textarea>
       </div>
     </section>
   </main>
+  <script src="js/host-capabilities.js"></script>
   <script src="js/ui-engine-bridge.js"></script>
+  <script src="js/ui-config.js"></script>
   <script src="js/ui-board.js"></script>
 </body>
 </html>

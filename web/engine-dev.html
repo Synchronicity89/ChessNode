@@ -21,8 +21,8 @@
       <div id="controls" class="controls"></div>
       <h3>Presets</h3>
       <div class="presets">
-        <button id="savePreset">Save Preset</button>
-        <button id="loadPreset">Load Preset</button>
+        <button id="savePreset" data-pages-incompatible>Save Preset</button>
+        <button id="loadPreset" data-pages-incompatible>Load Preset</button>
       </div>
       <h3>AI Actions</h3>
       <div class="ai-actions">
@@ -31,10 +31,11 @@
         <button id="genTests">Generate Unit Tests for Selected Module</button>
       </div>
       <h3>Instruction Console</h3>
-      <textarea id="aiPrompt" placeholder="Describe the component or change you want..."></textarea>
-      <button id="sendPrompt">Send</button>
+      <textarea id="aiPrompt" placeholder="Describe the component or change you want..." data-pages-incompatible></textarea>
+      <button id="sendPrompt" data-pages-incompatible>Send</button>
     </aside>
   </main>
+  <script src="js/host-capabilities.js"></script>
   <script src="js/ui-engine-bridge.js"></script>
   <script src="js/ui-devtools.js"></script>
 </body>

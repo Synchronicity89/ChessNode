@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Position Descendants Explorer</title>
+  <link rel="stylesheet" href="css/style.css">
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+</head>
+<body>
+  <header>
+    <h1>Position Descendants Explorer</h1>
+    <nav>
+      <a href="index.html">Play</a>
+      <a href="engine-config.html">Config</a>
+      <a href="engine-explorer.html">Explorer</a>
+      <a href="engine-dev.html">Dev</a>
+    </nav>
+  </header>
+  <main class="layout dev">
+    <section class="graph-editor" style="flex:3;">
+      <h2>Root Position</h2>
+      <textarea id="rootFen" style="width:100%;height:60px;">rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1</textarea>
+      <div class="desc-config" style="margin-top:8px;">
+        <label>N Ply Depth <input id="plyDepth" type="number" min="1" max="8" value="2"></label>
+  <label><input id="enableThread" type="checkbox" data-pages-incompatible> Multithreading (future)</label>
+        <label><input id="enableNplus1" type="checkbox" checked> N+1 legality / reward filter</label>
+      </div>
+  <button id="runExplore">Explore Descendants</button>
+      <div id="exploreStatus" style="margin-top:6px;font-weight:bold;"></div>
+      <h3 style="margin-top:16px;">Parents / Children</h3>
+      <div class="explorer-flex" style="display:flex;gap:12px;">
+        <div style="flex:1;">
+          <h4>Parent Nodes</h4>
+          <ul id="parentList" class="list-box" style="height:240px;overflow:auto;border:1px solid #ccc;padding:4px;"></ul>
+        </div>
+        <div style="flex:1;">
+          <h4>Child Nodes (Moves)</h4>
+          <ul id="childList" class="list-box" style="height:240px;overflow:auto;border:1px solid #ccc;padding:4px;"></ul>
+        </div>
+        <div style="flex:1;">
+          <h4>Selected FEN Visualization</h4>
+          <div id="visBoard" class="board-placeholder" style="height:240px;">Select a node</div>
+          <div id="visMeta" style="margin-top:8px;font-size:12px;line-height:1.4;"></div>
+        </div>
+      </div>
+    </section>
+    <aside class="dev-controls" style="flex:2;">
+      <h2>Algorithm Notes</h2>
+      <p>This explorer uses a <strong>pseudo-move generator</strong> that lists piece movement targets (including illegal ones) to keep it fast and simple. Castling, promotions, and en passant squares are included without legality checks initially.</p>
+      <p>When N+1 filtering is enabled, the tool performs a shallow legality/reward check one ply deeper to flag moves as potential mate, illegal (king capture), or castle-invalidating.</p>
+      <h3>Future Tunables</h3>
+      <ul>
+        <li>Selective pruning toggles</li>
+        <li>On-demand legality refinement depth</li>
+        <li>Scoring heuristics (material balance hint)</li>
+        <li>Concurrency (Web Workers)</li>
+      </ul>
+      <h3>Export</h3>
+      <button id="exportTree">Export Tree JSON</button>
+      <textarea id="treeOut" style="width:100%;height:140px;margin-top:8px;" placeholder="Tree export appears here"></textarea>
+    </aside>
+  </main>
+  <script src="js/host-capabilities.js"></script>
+  <script src="js/ui-explorer.js"></script>
+</body>
+</html>

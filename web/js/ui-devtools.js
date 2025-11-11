@@ -2,6 +2,8 @@
 (function(){
   const controlsEl = $('#controls');
   const aiPromptEl = $('#aiPrompt');
+  const OWNER = 'Synchronicity89';
+  const REPO = 'ChessNode';
 
   function addCheckbox(id,label){
     const wrap = $('<div class="chk">');
@@ -29,4 +31,22 @@
     alert('Stub: AI request captured. ("' + text + '")');
     aiPromptEl.val('');
   });
+
+  function openIssue(title, kind) {
+    const text = (aiPromptEl.val() || '').trim();
+    const body = `Automated request from engine-dev UI (GitHub Pages)\n\n` +
+      `Kind: ${kind}\n\n` +
+      `User Instructions:\n\n` +
+      '```\n' + text + '\n```' +
+      `\n\nAcceptance Criteria:\n- Provide C++17 code under engine/src and engine/include\n- Add/update tests in engine/tests (deterministic)\n- Keep cross-platform and WASM-compatible\n- Do not commit build outputs\n`;
+    const url = `https://github.com/${OWNER}/${REPO}/issues/new?` +
+      `title=${encodeURIComponent(title)}` +
+      `&body=${encodeURIComponent(body)}` +
+      `&labels=${encodeURIComponent('ai-request')}`;
+    window.open(url, '_blank');
+  }
+
+  $('#addEval').on('click', () => openIssue('AI: Add Evaluation Module', 'evaluation'));
+  $('#modifySearch').on('click', () => openIssue('AI: Modify Search Strategy', 'search'));
+  $('#genTests').on('click', () => openIssue('AI: Generate Unit Tests for Selected Module', 'tests'));
 })();
