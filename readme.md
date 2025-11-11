@@ -23,6 +23,16 @@ Human guidance and orchestration remain central — the AI produces components, 
 
 ---
 
+## Live demo (GitHub Pages)
+
+- Play UI: https://synchronicity89.github.io/ChessNode/
+- Developer UI: https://synchronicity89.github.io/ChessNode/engine-dev.html
+
+Notes
+- Pages is published via a CI workflow that builds the WASM artifacts on GitHub Actions; no build products are committed to the repository. See `.github/workflows/deploy-pages.yml` and BUILDING.md for details.
+
+---
+
 ## Technical Philosophy
 
 1. **Everything is modular.**  
