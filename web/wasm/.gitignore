@@ -1,0 +1,3 @@
+# Ignore compiled WASM artifacts in this folder
+*.wasm
+engine.wasm

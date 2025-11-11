@@ -14,3 +14,11 @@ Thumbs.db
 # Secrets / API tokens
 API_KEYS/
 API_KEYS/**/*.json
+engine/build/
+web/wasm/engine.wasm
+web/wasm/engine.js
+engine/*.o
+engine/*.obj
+engine/*.a
+engine/*.lib
+engine/chess_tests

@@ -1,0 +1,15 @@
+body { font-family: Arial, sans-serif; margin:0; padding:0; }
+header { background:#222; color:#fff; padding:10px 16px; }
+h1 { margin:0; font-size:20px; }
+.layout { display:flex; gap:16px; padding:16px; }
+.board-panel { flex:2; }
+.sidebar { flex:1; background:#f7f7f7; padding:12px; border-left:1px solid #ddd; }
+.board-placeholder { width:400px; height:400px; background:#ccc; display:flex; align-items:center; justify-content:center; font-weight:bold; }
+.controls label { display:block; margin:4px 0; }
+#moveList { max-height:300px; overflow:auto; padding-left:20px; }
+.io textarea { width:100%; height:80px; margin-top:6px; }
+.dev { align-items:flex-start; }
+.graph-editor { flex:3; background:#fafafa; border:1px dashed #bbb; padding:12px; }
+.dev-controls { flex:2; background:#f0f0f0; border:1px solid #ddd; padding:12px; }
+.dev-controls h3 { margin-top:16px; }
+.chk { margin-bottom:4px; }

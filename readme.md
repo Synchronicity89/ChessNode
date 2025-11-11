@@ -103,6 +103,10 @@ Notes
 
 This layout keeps the C++ core clean, testable, and toolchain-agnostic while allowing the browser UI to orchestrate and experiment with engine composition entirely client-side.
 
+### Building
+
+See BUILDING.md for cross-platform native and WebAssembly build instructions using CMake (recommended) or a portable Makefile for Unix-like systems. No platform-specific scripts are required.
+
 ---
 
 ## The Chess Play Interface (index.html)
@@ -175,11 +179,15 @@ Testing framework will use:
 
 ## Cross-Platform Requirements
 
-- Must compile on:
+- Must compile and run on:
    - Linux
    - macOS
-   - Windows (via MinGW or Clang; **no BAT/Powershell build scripts permitted**)
-- Build configuration uses **CMake** exclusively.
+   - Windows
+   - BSD (where a C++17 toolchain is available)
+- Tooling must be platform-agnostic:
+   - Primary: standard C++17 compilers (Clang, GCC, MSVC)
+   - Recommended: CMake (cross-platform generator) or a simple portable Makefile for Unix-like systems
+   - No platform-specific shell scripts required or assumed
 
 ---
 
