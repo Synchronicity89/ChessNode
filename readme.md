@@ -120,6 +120,26 @@ This layout keeps the C++ core clean, testable, and toolchain-agnostic while all
 
 See BUILDING.md for cross-platform native and WebAssembly build instructions using CMake (recommended) or a portable Makefile for Unix-like systems. No platform-specific scripts are required.
 
+### Running helper scripts (PowerShell on macOS/Linux)
+
+This repository includes a convenience script `scripts/make-stable.ps1` that creates a stable snapshot of the web UI for manual testing. It now supports a `-Build` switch which (if Emscripten is installed) performs a fresh WASM build before copying the snapshot.
+
+- On Windows: PowerShell is available by default. You can run the script from a PowerShell terminal.
+- On macOS/Linux: install PowerShell ("PowerShell 7", command `pwsh`) and optionally the VS Code PowerShell extension for editor integration. Then run:
+
+```bash
+# Snapshot only
+pwsh scripts/make-stable.ps1
+
+# Fresh WASM build + snapshot (requires em++ on PATH)
+pwsh scripts/make-stable.ps1 -Build
+```
+
+Notes
+- The VS Code PowerShell extension provides language tooling and integrated execution but does not install C# or other languages.
+- Installing PowerShell does not add C# support to this repo; C# requires separate tooling (e.g., .NET SDK and the VS Code C# extension) and is not currently used here.
+- If you prefer bash/zsh, the script can be replicated in a few lines using `cp`/`rsync` (see BUILDING.md for the snapshot workflow); maintaining a second shell script is intentionally avoided to keep one source of truth.
+
 ---
 
 ## The Chess Play Interface (index.html)
