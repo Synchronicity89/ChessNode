@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+
+# Logs
+logs/
+*.log
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Secrets / API tokens
+API_KEYS/
+API_KEYS/**/*.json
