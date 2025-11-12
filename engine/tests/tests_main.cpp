@@ -78,6 +78,72 @@ int main() {
         if (s.find("\"fen\":\"8/P7/8/8/8/8/8/k6K w - - 0 1\"") != std::string::npos){ std::cerr<<"FAIL: root FEN appears in nodes for promotions test"<<std::endl; failures++; }
     }
 
+    // --- Targeted legality and castling tests using apply_move_if_legal ---
+    auto apply_expect_ok = [&](const char* name, const char* fen, const char* uci, const char* opts, bool expectOk){
+        const char* res = apply_move_if_legal(fen, uci, opts);
+        bool ok = false;
+        if (res && std::strlen(res)>0) {
+            std::string out(res);
+            ok = out.find("error") == std::string::npos; // treat any JSON with "error" as failure
+        }
+        if (ok != expectOk) {
+            std::cerr << "FAIL: " << name << " applying " << uci << " on FEN=\n  " << fen
+                      << "\n  opts=" << (opts?opts:"<none>")
+                      << "\n  got " << (ok?"OK":"ILLEGAL") << " expected " << (expectOk?"OK":"ILLEGAL") << std::endl;
+            failures++;
+        }
+        return res; // may be nullptr; caller should not free
+    };
+
+    // 1) White K-side castling allowed when path clear and safe
+    const char* fenCastleClear = "4k3/8/8/8/8/8/8/R3K2R w K - 0 1"; // f1,g1 empty; rights K
+    apply_expect_ok("castle clear safe (white K)", fenCastleClear, "e1g1", "{\"includeCastling\":true,\"castleSafety\":true}", true);
+
+    // 2) Safety blocks K-side castling when a transit square is attacked (rook on f3 attacks f1)
+    const char* fenCastleUnsafe = "4k3/8/8/8/8/5r2/8/4K2R w K - 0 1"; // black rook on f3 attacks f1
+    apply_expect_ok("castle blocked by attack (safety on)", fenCastleUnsafe, "e1g1", "{\"includeCastling\":true,\"castleSafety\":true}", false);
+    apply_expect_ok("castle allowed when safety off", fenCastleUnsafe, "e1g1", "{\"includeCastling\":true,\"castleSafety\":false}", true);
+
+    // 3) Path blocked should prevent castling regardless of safety
+    const char* fenCastlePathBlocked = "4k3/8/8/8/8/8/8/R3K1NR w K - 0 1"; // knight on g1 blocks
+    apply_expect_ok("castle blocked by piece on path", fenCastlePathBlocked, "e1g1", "{\"includeCastling\":true,\"castleSafety\":true}", false);
+
+    // 4) Castling rights lost after king moves
+    const char* afterKingMove = apply_expect_ok("king move loses castling rights", fenCastleClear, "e1f1", "{\"includeCastling\":true,\"castleSafety\":true}", true);
+    if (afterKingMove) {
+        apply_expect_ok("cannot castle after king has moved", afterKingMove, "e1g1", "{\"includeCastling\":true,\"castleSafety\":true}", false);
+    } else { failures++; }
+
+    // 5) Castling rights lost after rook moves
+    const char* afterRookMove = apply_expect_ok("rook move loses castling rights", fenCastleClear, "h1h2", "{\"includeCastling\":true,\"castleSafety\":true}", true);
+    if (afterRookMove) {
+        apply_expect_ok("cannot castle after rook has moved", afterRookMove, "e1g1", "{\"includeCastling\":true,\"castleSafety\":true}", false);
+    } else { failures++; }
+
+    // 6) Black K-side castling allowed when path clear and safe
+    const char* fenBlackCastle = "r3k2r/8/8/8/8/8/8/4K3 b k - 0 1";
+    apply_expect_ok("black castle clear safe (K)", fenBlackCastle, "e8g8", "{\"includeCastling\":true,\"castleSafety\":true}", true);
+
+    // 7) Regression: sequence should not eliminate all legal moves
+    const char* startFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    const char* seq1 = apply_expect_ok("seq f2f4", startFen, "f2f4", "{\"includeCastling\":true,\"castleSafety\":true}", true);
+    const char* seq2 = seq1 ? apply_expect_ok("seq e7e5", seq1, "e7e5", "{\"includeCastling\":true,\"castleSafety\":true}", true) : nullptr;
+    const char* seq3 = seq2 ? apply_expect_ok("seq g1f3", seq2, "g1f3", "{\"includeCastling\":true,\"castleSafety\":true}", true) : nullptr;
+    const char* seq4 = seq3 ? apply_expect_ok("seq f8c5", seq3, "f8c5", "{\"includeCastling\":true,\"castleSafety\":true}", true) : nullptr;
+    const char* seq5 = seq4 ? apply_expect_ok("seq e2e4", seq4, "e2e4", "{\"includeCastling\":true,\"castleSafety\":true}", true) : nullptr;
+    const char* seq6 = seq5 ? apply_expect_ok("seq g8f6", seq5, "g8f6", "{\"includeCastling\":true,\"castleSafety\":true}", true) : nullptr;
+    if (seq6) {
+        const char* jsonMoves = generate_descendants_opts(seq6, 1, 0, "{\"castleSafety\":true}");
+        if (!jsonMoves) { std::cerr << "FAIL: descendants after sequence returned null" << std::endl; failures++; }
+        if (jsonMoves) {
+            std::string s(jsonMoves);
+            auto pos = s.find("\"totalNodes\":");
+            if (pos!=std::string::npos){ int val = std::atoi(s.c_str()+pos+13); if(val < 1){ std::cerr<<"FAIL: totalNodes after sequence is 0"<<std::endl; failures++; }}
+        }
+    } else {
+        std::cerr << "FAIL: could not complete regression sequence" << std::endl; failures++;
+    }
+
     if (failures) return 1;
     std::cout << "OK" << std::endl;
     return 0;

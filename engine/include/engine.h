@@ -23,6 +23,13 @@ const char* generate_descendants(const char* fen, int depth, int enableNPlus1);
 // Null/empty -> defaults.
 const char* generate_descendants_opts(const char* fen, int depth, int enableNPlus1, const char* optionsJson);
 
+// List legal moves for a position. If fromSqOrNull is non-null (e.g. "e2") restrict to moves originating there.
+// Returns JSON array/object string, or {"error":"..."} on failure.
+const char* list_legal_moves(const char* fen, const char* fromSqOrNull, const char* optionsJson);
+
+// Apply a UCI move (e.g. "e2e4", "e7e8q") to the position if legal given options; returns new FEN or {"error":"illegal"}.
+const char* apply_move_if_legal(const char* fen, const char* uciMove, const char* optionsJson);
+
 #ifdef __cplusplus
 }
 #endif

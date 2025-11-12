@@ -134,7 +134,8 @@ void genKing(const Pos &p, const Options &opt, int r, int c, bool white, std::ve
     };
     auto squareAttacked = [&](int rr,int cc, bool byWhite){
         Pos tmp = p; tmp.stm = byWhite? 'w':'b';
-        auto attacks = genPseudo(tmp, opt);
+        Options o2 = opt; o2.includeCastling = false; // exclude castling from attack detection
+        auto attacks = genPseudo(tmp, o2);
         for (const auto &m : attacks) if (m.tr==rr && m.tc==cc) return true; return false;
     };
     auto canCastle = [&](bool w, bool kingSide){
@@ -259,6 +260,45 @@ std::string nPlus1Tag(const Pos &p) {
     return "ok";
 }
 
+// Utility: locate king for side
+std::pair<int,int> findKing(const Pos &p, bool white){
+    for (int r=0;r<8;++r) for (int c=0;c<8;++c){
+        if (white && p.board[r][c]=='K') return {r,c};
+        if (!white && p.board[r][c]=='k') return {r,c};
+    }
+    return {-1,-1};
+}
+
+// Attack detector: are there attacks on (r,c) by the indicated color
+bool squareAttackedBy(const Pos &p, int r, int c, bool byWhite, const Options &opt){
+    Pos tmp = p; tmp.stm = byWhite? 'w':'b';
+    Options o = opt; o.includeCastling = false; // castling isn't an attack pattern
+    auto atks = genPseudo(tmp, o);
+    for (const auto &m : atks) if (m.tr==r && m.tc==c) return true; return false;
+}
+
+// Legal moves from position p: pseudo then filtered by king-in-check after move
+std::vector<Move> genLegal(const Pos &p, const Options &opt){
+    std::vector<Move> legal;
+    auto pseudo = genPseudo(p, opt);
+    bool white = (p.stm=='w');
+    for (const auto &m : pseudo){
+        Pos np = applyMove(p, m);
+        auto k = findKing(np, white);
+        if (k.first<0) continue; // illegal if king missing
+        if (squareAttackedBy(np, k.first, k.second, !white, opt)) continue; // leaves king in check
+        legal.push_back(m);
+    }
+    return legal;
+}
+
+// Algebraic helpers
+std::string rcToAlg(int r,int c){ return std::string(1, char('a'+c)) + std::to_string(8-r); }
+bool algToRC(const std::string &sq, int &r, int &c){ if (sq.size()!=2) return false; c = sq[0]-'a'; int rank = sq[1]-'0'; r = 8-rank; return inBounds(r,c);} 
+
+std::string moveToUci(const Move &m){ std::string s; s+=rcToAlg(m.fr,m.fc); s+=rcToAlg(m.tr,m.tc); if (m.promo) s+=char(std::tolower((unsigned char)m.promo)); return s; }
+bool parseUci(const std::string &uci, Move &out){ if (uci.size()<4) return false; int fr,fc,tr,tc; if(!algToRC(uci.substr(0,2),fr,fc)) return false; if(!algToRC(uci.substr(2,2),tr,tc)) return false; out={fr,fc,tr,tc,0}; if (uci.size()>=5) out.promo = uci[4]; return true; }
+
 Options parseOptionsJson(const char* json) {
     Options o;
     if (!json || !*json) return o;
@@ -365,4 +405,39 @@ extern "C" const char* generate_descendants_opts(const char* fen, int depth, int
     out << "]}}";
     g_lastJson = out.str();
     return g_lastJson.c_str();
+}
+
+// List legal moves as JSON: {"moves":[{"from":"e2","to":"e4","uci":"e2e4"}, ...]}
+extern "C" const char* list_legal_moves(const char* fen, const char* fromSqOrNull, const char* optionsJson){
+    Pos p; if (!parseFEN(fen, p)) { g_lastJson = "{\"error\":\"bad fen\"}"; return g_lastJson.c_str(); }
+    Options opt = parseOptionsJson(optionsJson);
+    auto legal = genLegal(p, opt);
+    std::ostringstream out; out << "{\"moves\":[";
+    bool first=true; int frFilter=-1, fcFilter=-1;
+    if (fromSqOrNull && *fromSqOrNull){ std::string f(fromSqOrNull); algToRC(f, frFilter, fcFilter); }
+    for (const auto &m : legal){
+        if (frFilter>=0 && (m.fr!=frFilter || m.fc!=fcFilter)) continue;
+        if (!first) out << ","; first=false;
+        out << "{\"from\":\""<< rcToAlg(m.fr,m.fc) <<"\",\"to\":\""<< rcToAlg(m.tr,m.tc) <<"\",\"uci\":\""<< moveToUci(m) <<"\"";
+        if (m.promo) out << ",\"promo\":\""<< char(std::tolower((unsigned char)m.promo)) <<"\"";
+        out << "}";
+    }
+    out << "],\"stm\":\""<< p.stm <<"\"}";
+    g_lastJson = out.str(); return g_lastJson.c_str();
+}
+
+// Apply a UCI move if legal; returns new FEN or {"error":"illegal"}
+extern "C" const char* apply_move_if_legal(const char* fen, const char* uciMove, const char* optionsJson){
+    Pos p; if (!parseFEN(fen, p)) { g_lastJson = "{\"error\":\"bad fen\"}"; return g_lastJson.c_str(); }
+    Options opt = parseOptionsJson(optionsJson);
+    Move wanted; if (!uciMove || !parseUci(uciMove, wanted)) { g_lastJson = "{\"error\":\"bad move\"}"; return g_lastJson.c_str(); }
+    auto legal = genLegal(p, opt);
+    for (const auto &m : legal){
+        if (m.fr==wanted.fr && m.fc==wanted.fc && m.tr==wanted.tr && m.tc==wanted.tc && ((m.promo?std::tolower((unsigned char)m.promo):0) == (wanted.promo?std::tolower((unsigned char)wanted.promo):0))){
+            Pos np = applyMove(p, m);
+            g_lastJson = toFEN(np);
+            return g_lastJson.c_str();
+        }
+    }
+    g_lastJson = "{\"error\":\"illegal\"}"; return g_lastJson.c_str();
 }

@@ -85,7 +85,29 @@ const EngineBridge = (() => {
     return null; // JS fallback handled in caller
   }
 
-  return { init, getVersion, evaluateFEN, generateDescendants };
+  function listLegalMoves(fen, fromSq, options){
+    if (wasmReady && Module && Module.cwrap){
+      try {
+        const fn = Module.cwrap('list_legal_moves','string',['string','string','string']);
+        const opt = options ? JSON.stringify(options) : null;
+        return fn(fen||'', fromSq||null, opt);
+      } catch(e){}
+    }
+    return null;
+  }
+
+  function applyMoveIfLegal(fen, uci, options){
+    if (wasmReady && Module && Module.cwrap){
+      try {
+        const fn = Module.cwrap('apply_move_if_legal','string',['string','string','string']);
+        const opt = options ? JSON.stringify(options) : null;
+        return fn(fen||'', uci||'', opt);
+      } catch(e){}
+    }
+    return null;
+  }
+
+  return { init, getVersion, evaluateFEN, generateDescendants, listLegalMoves, applyMoveIfLegal };
 })();
 
 // Expose bridge on window for pages/scripts that reference window.EngineBridge
