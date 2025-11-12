@@ -5,6 +5,7 @@
   const statusEl = $('#exploreStatus');
   const boardEl = $('#visBoard');
   const metaEl = $('#visMeta');
+  const perfEl = $('#perfDetails');
 
   // Board utils -------------------------------------------------------------
   function parseFEN(fen){
@@ -93,185 +94,27 @@
   }
   function rcToAlgebraic(r,c){ return String.fromCharCode(97+c) + String(8-r); }
 
-  // Pseudo move generation --------------------------------------------------
-  function addMove(moves, from, to, promo){ moves.push({from, to, promo:promo||null}); }
-  function genPawn(pos, r, c, white, moves){
-    const dir = white? -1: +1;
-    const startRank = white? 6: 1;
-    const lastRank = white? 0: 7;
-    const one = {r:r+dir, c};
-    if (inBounds(one.r,one.c) && pos.board[one.r][one.c]==='.'){
-      if (one.r===lastRank){ ['q','r','b','n'].forEach(p=>addMove(moves,{r,c},one,p)); }
-      else addMove(moves,{r,c},one);
-      const two = {r:r+2*dir, c};
-      if (r===startRank && pos.board[two.r][two.c]==='.'){
-        addMove(moves,{r,c},two);
-      }
-    }
-    // captures
-    for (const dc of [-1,+1]){
-      const t={r:r+dir,c:c+dc};
-      if (!inBounds(t.r,t.c)) continue;
-      const target = pos.board[t.r][t.c];
-      if (target!=='.' && (white? isBlack(target): isWhite(target))){
-        if (t.r===lastRank){ ['q','r','b','n'].forEach(p=>addMove(moves,{r,c},t,p)); }
-        else addMove(moves,{r,c},t);
-      }
-    }
-    // en passant
-    if (pos.ep && pos.ep!=='-'){
-      const epRC = algebraicToRC(pos.ep);
-      if (epRC && epRC.r===r+dir && Math.abs(epRC.c-c)===1){
-        addMove(moves,{r,c},{r:epRC.r, c:epRC.c});
-      }
-    }
-  }
-  function genLeaper(pos, r, c, white, moves, deltas){
-    for (const d of deltas){
-      const t={r:r+d[0], c:c+d[1]};
-      if (!inBounds(t.r,t.c)) continue;
-      const target = pos.board[t.r][t.c];
-      if (target==='.' || (white? isBlack(target): isWhite(target))) addMove(moves,{r,c},t);
-    }
-  }
-  function genSlider(pos, r, c, white, moves, deltas){
-    for (const d of deltas){
-      let tr=r+ d[0], tc=c+ d[1];
-      while (inBounds(tr,tc)){
-        const target = pos.board[tr][tc];
-        if (target==='.') { addMove(moves,{r,c},{r:tr,c:tc}); }
-        else { if (white? isBlack(target): isWhite(target)) addMove(moves,{r,c},{r:tr,c:tc}); break; }
-        tr+=d[0]; tc+=d[1];
-      }
-    }
-  }
-  function genKing(pos, r, c, white, moves){
-    genLeaper(pos,r,c,white,moves,[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]);
-    // include castling squares (no legality checks for now)
-    if (white && pos.castling && /K/.test(pos.castling)) addMove(moves,{r,c},{r:7,c:6});
-    if (white && pos.castling && /Q/.test(pos.castling)) addMove(moves,{r,c},{r:7,c:2});
-    if (!white && pos.castling && /k/.test(pos.castling)) addMove(moves,{r,c},{r:0,c:6});
-    if (!white && pos.castling && /q/.test(pos.castling)) addMove(moves,{r,c},{r:0,c:2});
-  }
-  function genPseudoMoves(pos){
-    const moves=[]; const white = sideIsWhite(pos.stm);
-    for (let r=0;r<8;r++) for (let c=0;c<8;c++){
-      const ch = pos.board[r][c]; if (ch==='.') continue;
-      if (white && !isWhite(ch)) continue; if (!white && !isBlack(ch)) continue;
-      switch (ch.toLowerCase()){
-        case 'p': genPawn(pos,r,c,white,moves); break;
-        case 'n': genLeaper(pos,r,c,white,moves,[[2,1],[2,-1],[-2,1],[-2,-1],[1,2],[1,-2],[-1,2],[-1,-2]]); break;
-        case 'b': genSlider(pos,r,c,white,moves,[[1,1],[1,-1],[-1,1],[-1,-1]]); break;
-        case 'r': genSlider(pos,r,c,white,moves,[[1,0],[-1,0],[0,1],[0,-1]]); break;
-        case 'q': genSlider(pos,r,c,white,moves,[[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]]); break;
-        case 'k': genKing(pos,r,c,white,moves); break;
-      }
-    }
-    return moves;
-  }
-
-  // Apply move (pseudo): updates board, stm, castling, ep, clocks ----------------
-  function applyMove(pos, mv){
-    const np = clonePos(pos);
-    const from = mv.from, to = mv.to; const piece = np.board[from.r][from.c];
-    const white = isWhite(piece);
-    // Handle en passant capture
-    const isPawn = piece.toLowerCase()==='p';
-    const epNow = np.ep && np.ep!=='-' ? algebraicToRC(np.ep) : null;
-    if (isPawn && epNow && to.r===epNow.r && to.c===epNow.c && np.board[to.r][to.c]==='.'){
-      // capture pawn behind target square
-      const capR = white? to.r+1 : to.r-1;
-      np.board[capR][to.c]='.';
-    }
-    // Move rook on castling
-    if (piece.toLowerCase()==='k' && Math.abs(to.c-from.c)===2){
-      // white short/long or black
-      if (white && to.c===6){ np.board[7][5]=np.board[7][7]; np.board[7][7]='.'; }
-      if (white && to.c===2){ np.board[7][3]=np.board[7][0]; np.board[7][0]='.'; }
-      if (!white && to.c===6){ np.board[0][5]=np.board[0][7]; np.board[0][7]='.'; }
-      if (!white && to.c===2){ np.board[0][3]=np.board[0][0]; np.board[0][0]='.'; }
-    }
-    // Update castling rights if king/rook moved or captured
-    function removeCastling(flags){ if (!np.castling||np.castling==='-') return;
-      let s=np.castling; for (const f of flags) s=s.replace(f,''); np.castling = s||'-'; }
-    if (piece==='K') removeCastling(['K','Q']);
-    if (piece==='k') removeCastling(['k','q']);
-    if (piece==='R' && from.r===7 && from.c===0) removeCastling(['Q']);
-    if (piece==='R' && from.r===7 && from.c===7) removeCastling(['K']);
-    if (piece==='r' && from.r===0 && from.c===0) removeCastling(['q']);
-    if (piece==='r' && from.r===0 && from.c===7) removeCastling(['k']);
-    const captured = np.board[to.r][to.c];
-
-    // Move piece
-    np.board[to.r][to.c] = mv.promo ? (white? mv.promo.toUpperCase(): mv.promo.toLowerCase()) : piece;
-    np.board[from.r][from.c] = '.';
-
-    // Pawn double step -> set ep square
-    np.ep = '-';
-    if (isPawn && Math.abs(to.r-from.r)===2){
-      const midR = (to.r+from.r)/2; np.ep = rcToAlgebraic(midR, from.c);
-    }
-
-    // Clocks and stm
-    np.half = (isPawn || captured!=='.') ? 0 : (np.half||0)+1;
-    if (!white) np.full = (np.full||1)+1; // black moved
-    np.stm = white? 'b':'w';
-
-    return np;
-  }
-
-  // N+1 filter: reward/flag moves based on king presence at depth N+1 ----------
-  function nPlus1Filter(pos){
-    // Simple signals: missing opponent king => mate; missing own king => illegal/losing
-    let hasWK=false, hasBK=false;
-    for (let r=0;r<8;r++) for (let c=0;c<8;c++){
-      const ch=pos.board[r][c]; if (ch==='K') hasWK=true; if (ch==='k') hasBK=true;
-    }
-    if (!hasWK && hasBK) return { tag: 'own-king-missing' };
-    if (!hasBK && hasWK) return { tag: 'opponent-king-missing' };
-    if (!hasWK && !hasBK) return { tag: 'both-kings-missing' };
-    return { tag: 'ok' };
-  }
-
-  // Explore -----------------------------------------------------------------
-  function explore(rootFen, depth, enableN1){
-    const root = parseFEN(rootFen);
-    const tree = { root: rootFen, depth, nodes: [] };
-    const parents = [{ fen: rootFen, pos: root, depth:0 }];
-    for (let d=0; d<depth; d++){
-      const next=[];
-      for (const p of parents){
-        const moves = genPseudoMoves(p.pos);
-        for (const mv of moves){
-          const child = applyMove(p.pos, mv);
-          const fen = toFEN(child);
-          const node = { parent: p.fen, fen, d:d+1 };
-          if (enableN1 && d===depth-1){
-            // N+1 shallow check
-            const moves2 = genPseudoMoves(child);
-            // Evaluate a first child if any, else evaluate current position
-            const target = moves2.length? applyMove(child,moves2[0]) : child;
-            node.n1 = nPlus1Filter(target).tag;
-          }
-          tree.nodes.push(node);
-          next.push({ fen, pos: child, depth: d+1 });
-        }
-      }
-      if (!next.length) break;
-      parents.splice(0, parents.length, ...next);
-    }
-    return tree;
-  }
+  // All chess engine business logic removed from JS; generation now exclusively in C++.
 
   // UI wiring ---------------------------------------------------------------
   function listParents(tree){
     parentList.empty();
     const seen = new Set();
+    const includeRoot = !!cfg.includeRootInList;
+    // Optionally place root first
+    if (includeRoot) {
+      seen.add(tree.root);
+      const li=$('<li>').text('[root] ' + tree.root.substring(0,80)).css('cursor','pointer');
+      li.on('click', ()=>{ selectParent(tree, tree.root); });
+      parentList.append(li);
+    }
     for (const n of tree.nodes){
       if (n.d===0) continue;
+      if (!includeRoot && n.parent === tree.root) continue; // omit root unless requested
       if (!seen.has(n.parent)){
         seen.add(n.parent);
-        const li=$('<li>').text(n.parent.substring(0,80)).css('cursor','pointer');
+        const label = (n.parent === tree.root ? '[root] ' : '') + n.parent.substring(0,80);
+        const li=$('<li>').text(label).css('cursor','pointer');
         li.on('click', ()=>{ selectParent(tree, n.parent); });
         parentList.append(li);
       }
@@ -292,6 +135,52 @@
     if (!childList.children().length) childList.append($('<li>').text('No children.'));
   }
 
+  function loadConfigDefaults(){
+    const def = {
+      includeCastling: true,
+      includeEnPassant: true,
+      promotions: 'qrbn',
+      capPerParent: 0,
+      uniquePerPly: false,
+      includeRootInList: false,
+      castleSafety: true
+    };
+    try {
+      const saved = localStorage.getItem('descConfig');
+      if (saved) return Object.assign(def, JSON.parse(saved));
+    } catch(e){}
+    return def;
+  }
+  const cfg = loadConfigDefaults();
+
+  // Inject simple config controls (lightweight; future: separate panel)
+  const extra = $(
+    '<div class="extra-desc-cfg" style="margin:8px 0 12px; display:flex; flex-wrap:wrap; gap:12px; font-size:12px;">'
+    + '<label>Castling <input id="cfgCastling" type="checkbox" '+(cfg.includeCastling?'checked':'')+'></label>'
+    + '<label>Castle Safety <input id="cfgCastleSafety" type="checkbox" '+(cfg.castleSafety?'checked':'')+'></label>'
+    + '<label>En Passant <input id="cfgEnPassant" type="checkbox" '+(cfg.includeEnPassant?'checked':'')+'></label>'
+    + '<label>Promotions <input id="cfgPromotions" type="text" value="'+cfg.promotions+'" size="5" placeholder="qrbn"></label>'
+    + '<label>Cap/Parent <input id="cfgCapPerParent" type="number" min="0" value="'+cfg.capPerParent+'" style="width:70px"></label>'
+    + '<label>Unique/Ply <input id="cfgUnique" type="checkbox" '+(cfg.uniquePerPly?'checked':'')+'></label>'
+    + '<label>Include Root <input id="cfgIncludeRoot" type="checkbox" '+(cfg.includeRootInList?'checked':'')+'></label>'
+    + '</div>'
+  );
+  $('.desc-config').after(extra);
+
+  function readOptions(){
+    const o = {
+      includeCastling: $('#cfgCastling').is(':checked'),
+      castleSafety: $('#cfgCastleSafety').is(':checked'),
+      includeEnPassant: $('#cfgEnPassant').is(':checked'),
+      promotions: ($('#cfgPromotions').val()||'qrbn').trim(),
+      capPerParent: Math.max(0, parseInt($('#cfgCapPerParent').val()||'0',10)),
+      uniquePerPly: $('#cfgUnique').is(':checked'),
+      includeRootInList: $('#cfgIncludeRoot').is(':checked')
+    };
+    localStorage.setItem('descConfig', JSON.stringify(o));
+    return o;
+  }
+
   $('#runExplore').on('click', ()=>{
     try{
       const fen = $('#rootFen').val().trim();
@@ -299,14 +188,35 @@
       const enableN1 = $('#enableNplus1').is(':checked');
       statusEl.text('Running...');
       setTimeout(()=>{
-        const t0 = performance.now();
-        const tree = explore(fen, depth, enableN1);
-        const t1 = performance.now();
-        statusEl.text(`Nodes: ${tree.nodes.length} in ${(t1-t0).toFixed(1)} ms`);
-        listParents(tree);
-        $('#exportTree').off('click').on('click', ()=>{
-          $('#treeOut').val(JSON.stringify(tree));
-        });
+        // Prefer WASM implementation when available, else fallback to JS
+        const options = readOptions();
+  if (window.EngineBridge && window.EngineBridge.generateDescendants) {
+          const t0 = performance.now();
+          const json = window.EngineBridge.generateDescendants(fen, depth, !!enableN1, options);
+          const tree = typeof json === 'string' ? JSON.parse(json) : json;
+          const t1 = performance.now();
+          statusEl.text(`Nodes: ${tree.nodes.length} in ${(tree.perf?.elapsedMs ?? (t1-t0)).toFixed(1)} ms`);
+          if (perfEl && tree.perf) {
+            const b = (tree.perf.ply||[]).map(s=>`Ply ${s.ply}: ${s.generated}`).join(' | ');
+            perfEl.text(`Generated: ${tree.perf.totalNodes} | ${b}`);
+          }
+          $('#exportTree').off('click').on('click', ()=>{
+            tree.config = options; // inject config for export visibility
+            $('#treeOut').val(JSON.stringify(tree));
+          });
+          // Update in-memory cfg to reflect most recent settings for list rendering
+          Object.assign(cfg, options);
+          listParents(tree);
+        } else {
+          // Fallback stub (no engine available): produce empty tree with metadata only.
+          const tree = { root: fen, depth, nodes: [], perf: { totalNodes:0, ply:[], elapsedMs:0 }, note: 'engine-unavailable' };
+          statusEl.text('Engine unavailable (no WASM).');
+          perfEl.text('No generation performed.');
+          listParents(tree);
+          $('#exportTree').off('click').on('click', ()=>{
+            $('#treeOut').val(JSON.stringify(tree));
+          });
+        }
       }, 10);
     }catch(e){ statusEl.text('Error: '+e.message); }
   });

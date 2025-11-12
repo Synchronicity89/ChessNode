@@ -1,0 +1,72 @@
+name: engine-ci
+
+on:
+  push:
+    branches: [ main, minimal ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-native:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (CMake)
+        run: cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build engine/build --config Release --target chess_engine
+      - name: Tests
+        run: ctest --test-dir engine/build -C Release --output-on-failure
+
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Emscripten
+        uses: mymindstorm/emsdk-action@v11
+        with:
+          version: 'latest'
+          actions-cache-key: emsdk-cache
+      - name: Verify em++
+        run: em++ --version
+      - name: Build WASM (single-step)
+        run: |
+          mkdir -p web/wasm
+          em++ -std=c++17 -O3 \
+            engine/src/example.cpp engine/src/fen.cpp engine/src/descendants.cpp \
+            -Iengine/include \
+            -sEXPORTED_FUNCTIONS='["_evaluate_fen","_engine_version","_generate_descendants","_generate_descendants_opts"]' \
+            -sEXPORTED_RUNTIME_METHODS='["cwrap"]' \
+            -sMODULARIZE=1 -sEXPORT_NAME='EngineModule' \
+            -o web/wasm/engine.js
+      - name: Upload WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-engine
+          path: web/wasm/
+          if-no-files-found: error
+
+  pages-deploy:
+    needs: [build-native, build-wasm]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download wasm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: wasm-engine
+          path: web/wasm
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4

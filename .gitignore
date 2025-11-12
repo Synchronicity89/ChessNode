@@ -22,3 +22,4 @@ engine/*.obj
 engine/*.a
 engine/*.lib
 engine/chess_tests
+manual_test_env/

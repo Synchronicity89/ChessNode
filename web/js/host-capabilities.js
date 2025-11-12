@@ -1,4 +1,4 @@
-// Detect hosting environment and disable unsupported controls.
+// Detect hosting environment and disable unsupported controls WITHOUT network 404 spam.
 (function(){
   const HOST_INFO = {
     hostname: window.location.hostname,
@@ -6,23 +6,37 @@
     isGithubPages: /\.github\.io$/i.test(window.location.hostname),
   };
 
-  // Capability probes (dynamic): try to fetch wasm head and see if same-origin writes possible.
-  async function detectCapabilities(){
-    const caps = { wasm:false, localWrite:false };
-    try {
-      const res = await fetch('wasm/engine.js', { method:'HEAD' });
-      caps.wasm = res.ok;
-    } catch(e){ caps.wasm = false; }
-    // localWrite heuristic: attempt to set localStorage and cookie
+  // Capability detection strategy (no HEAD requests):
+  // 1. Listen for 'engine-bridge-ready' event emitted by ui-engine-bridge.js.
+  // 2. Fallback after a timeout if engine not reported.
+  // 3. Local write capability tested via localStorage/cookie (fast, no network).
+  function detectLocalWrite(){
     try {
       const key = 'capTest_'+Date.now();
       localStorage.setItem(key,'1');
       localStorage.removeItem(key);
       document.cookie = 'capTest=1;path=/';
-      caps.localWrite = true;
-    } catch(e){ caps.localWrite = false; }
-    return caps;
+      return true;
+    } catch(e){ return false; }
   }
+
+  let caps = { wasm:false, localWrite: detectLocalWrite(), decided:false };
+
+  function finalizeCaps(){
+    if (caps.decided) return caps; caps.decided = true; applyPolicy(caps); return caps;
+  }
+
+  window.addEventListener('engine-bridge-ready', (e)=>{
+    if (e && e.detail) {
+      caps.wasm = !!e.detail.wasmReady;
+    }
+    finalizeCaps();
+  }, { once:true });
+
+  // Fallback: if bridge never fires (script missing), decide after 1s.
+  window.addEventListener('DOMContentLoaded', ()=>{
+    setTimeout(()=>finalizeCaps(), 1000);
+  });
 
   function explainOnce(msg){
     if (document.getElementById('hostCapabilityNotice')) return;
@@ -58,8 +72,5 @@
     }
   }
 
-  window.addEventListener('DOMContentLoaded', async () => {
-    const caps = await detectCapabilities();
-    applyPolicy(caps);
-  });
+  // (Policy application now triggered by finalizeCaps)
 })();

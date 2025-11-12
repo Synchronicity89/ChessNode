@@ -1,5 +1,4 @@
-// Minimal engine bridge placeholder.
-// Attempts to detect presence of wasm/engine.wasm and logs mode.
+// Engine bridge: loads wasm/engine.js if present, exposes C exports, and notifies readiness.
 
 const EngineBridge = (() => {
   let wasmAvailable = false;
@@ -7,21 +6,8 @@ const EngineBridge = (() => {
   let Module = null; // Emscripten module when loaded
 
   async function detectWasm() {
-    try {
-      // Prefer emscripten JS glue (engine.js), which will load the wasm for us
-      const jsHead = await fetch('wasm/engine.js', { method: 'HEAD' });
-      if (jsHead.ok) {
-        wasmAvailable = true;
-        return 'emscripten-js';
-      }
-      // Fallback check: raw wasm present (not typically used without glue)
-      const res = await fetch('wasm/engine.wasm', { method: 'HEAD' });
-      wasmAvailable = res.ok;
-      return wasmAvailable ? 'raw-wasm' : 'none';
-    } catch (e) {
-      wasmAvailable = false;
-      return 'none';
-    }
+    // Avoid HEAD probes that spam console/network. We'll try to load engine.js directly below.
+    return 'emscripten-js';
   }
 
   function loadScript(url) {
@@ -42,22 +28,24 @@ const EngineBridge = (() => {
         if (typeof window.EngineModule === 'function') {
           Module = await window.EngineModule();
           wasmReady = true;
-          console.log('[EngineBridge] Emscripten module loaded.');
+          //console.log('[EngineBridge] Emscripten module loaded.');
         } else if (typeof window.Module !== 'undefined' && window.Module.ready) {
           Module = await window.Module.ready; // best-effort fallback
           wasmReady = true;
-          console.log('[EngineBridge] Emscripten Module (global) loaded.');
+          //console.log('[EngineBridge] Emscripten Module (global) loaded.');
         } else {
-          console.warn('[EngineBridge] engine.js present but no EngineModule factory found. Falling back to JS stub.');
+          // Leave wasmReady=false; engine not available.
         }
       } catch (e) {
-        console.warn('[EngineBridge] Failed to load engine.js; using JS stub.', e);
+        // Silently ignore; engine not available.
       }
-    } else if (mode === 'raw-wasm') {
-      console.log('[EngineBridge] engine.wasm detected without JS glue; using JS stub.');
     } else {
-      console.log('[EngineBridge] No engine module found. Running in JS-only placeholder mode.');
+      // No engine module found.
     }
+    wasmAvailable = !!Module;
+    try {
+      window.dispatchEvent(new CustomEvent('engine-bridge-ready', { detail: { wasmReady, wasmAvailable, mode, Module } }));
+    } catch {}
   }
 
   function getVersion() {
@@ -76,29 +64,32 @@ const EngineBridge = (() => {
     if (wasmReady && Module && Module.cwrap) {
       try {
         const fn = Module.cwrap('evaluate_fen', 'number', ['string']);
-        if (fn) {
-          return fn(fen || '');
-        }
-      } catch (e) {
-        // fallback to JS
-      }
+        if (fn) return fn(fen || '');
+      } catch (e) {}
     }
-    // JS fallback: material-only eval matching C++ placeholder.
-    const vals = { p:100, n:300, b:300, r:500, q:900 };
-    if (!fen) return 0;
-    const board = fen.split(' ')[0] || '';
-    let score = 0;
-    for (const c of board) {
-      if (c === '/' || /[1-8]/.test(c)) continue;
-      const lower = c.toLowerCase();
-      const v = vals[lower] || 0;
-      if (c === lower) score -= v; else score += v; // lowercase => black
-    }
-    return score;
+    return null; // engine not available
   }
 
-  return { init, getVersion, evaluateFEN };
+  function generateDescendants(fen, depth, nplus1, options){
+    // WASM path: prefer configurable entry if available
+    if (wasmReady && Module && Module.cwrap) {
+      try {
+        const fnExt = Module.cwrap('generate_descendants_opts', 'string', ['string','number','number','string']);
+        if (fnExt) return fnExt(fen, depth|0, nplus1?1:0, options ? JSON.stringify(options) : null);
+      } catch(e){ /* try basic */ }
+      try {
+        const fn = Module.cwrap('generate_descendants', 'string', ['string','number','number']);
+        if (fn) return fn(fen, depth|0, nplus1?1:0);
+      } catch(e){ /* fall through */ }
+    }
+    return null; // JS fallback handled in caller
+  }
+
+  return { init, getVersion, evaluateFEN, generateDescendants };
 })();
+
+// Expose bridge on window for pages/scripts that reference window.EngineBridge
+try { window.EngineBridge = EngineBridge; } catch {}
 
 window.addEventListener('DOMContentLoaded', () => {
   EngineBridge.init();

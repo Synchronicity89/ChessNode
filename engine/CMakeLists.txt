@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(chess_engine STATIC
     src/example.cpp
+    src/descendants.cpp
     src/fen.cpp
 )
 

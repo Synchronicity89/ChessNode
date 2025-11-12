@@ -52,21 +52,33 @@ emcmake cmake .. -DBUILD_WASM=ON -DCMAKE_BUILD_TYPE=Release
 emmake cmake --build . --config Release --target chess_engine
 ```
 
-Option B: Single-step compile producing an Emscripten glue JS + WASM pair for the bridge:
+Option B: Single-step compile producing an Emscripten glue JS + WASM pair for the bridge (include descendants API):
 ```
 cd engine
 em++ -std=c++17 -O3 \
-  src/example.cpp src/fen.cpp \
+  src/example.cpp src/fen.cpp src/descendants.cpp \
   -Iinclude \
-  -sEXPORTED_FUNCTIONS='["_evaluate_fen","_engine_version"]' \
+  -sEXPORTED_FUNCTIONS='["_evaluate_fen","_engine_version","_generate_descendants","_generate_descendants_opts"]' \
   -sEXPORTED_RUNTIME_METHODS='["cwrap"]' \
   -sMODULARIZE=1 -sEXPORT_NAME='EngineModule' \
   -o ../web/wasm/engine.js
 ```
 
-This generates `engine.js` (loader) and `engine.wasm` in `web/wasm/`. The browser bridge auto-detects `engine.js` and calls the exported C functions via `cwrap`.
+This generates `engine.js` (loader) and `engine.wasm` in `web/wasm/`. The browser bridge loads `engine.js` (no HEAD probe) and calls the exported C functions via `cwrap`. Missing WASM simply degrades to UI-only mode without console 404 spam.
 
 To rebuild after changes, rerun the em++ command; no manual copying is needed.
+
+### Stable Manual Test Snapshot (Optional)
+
+You can create a reproducible static snapshot separate from ongoing development for manual testing:
+
+```
+pwsh scripts/make-stable.ps1
+```
+
+This produces `manual_test_env/web/` (ignored by git) mirroring `web/`. If WASM artifacts (`engine.js`/`engine.wasm`) exist, they are copied; otherwise the UI runs in stub mode. Point Live Server at `manual_test_env/web/index.html` for a stable environment while continuing edits in `web/`.
+
+Regenerate after meaningful changes to refresh the snapshot.
 
 ## Testing
 
@@ -84,7 +96,8 @@ To rebuild after changes, rerun the em++ command; no manual copying is needed.
 | Issue | Resolution |
 |-------|------------|
 | Missing compiler features | Verify compiler version supports C++17 (`c++ -std=c++17 -dM -E - < /dev/null | grep __cplusplus`). |
-| Undefined exported WASM symbol | Ensure functions use `extern "C"` and are included in `-sEXPORTED_FUNCTIONS`. |
+| Undefined exported WASM symbol | Ensure functions use `extern "C"` and are included in `-sEXPORTED_FUNCTIONS` (see Option B command). |
+| Repeated 404 for wasm/engine.js | Build the WASM artifact OR ignore; the bridge no longer probes via HEAD. Confirm `web/wasm/engine.js` exists if you expect engine functionality. |
 | Test failures | Run with `ctest --output-on-failure` or `./chess_tests` for direct stderr. |
 | Windows path issues | Use forward slashes or quoted paths in CMake; avoid batch-only syntax. |
 

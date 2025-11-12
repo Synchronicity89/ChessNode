@@ -31,6 +31,7 @@ Human guidance and orchestration remain central — the AI produces components, 
 
 Notes
 - Pages is published via a CI workflow that builds the WASM artifacts on GitHub Actions; no build products are committed to the repository. See `.github/workflows/deploy-pages.yml` and BUILDING.md for details.
+- The UI no longer probes `wasm/engine.js` via HTTP HEAD; the bridge attempts to load `engine.js` directly and falls back quietly if missing. If you expect engine functionality on Pages, ensure the CI build step emits `web/wasm/engine.js` and `web/wasm/engine.wasm`.
 
 ---
 
@@ -131,8 +132,17 @@ This repository includes a convenience script `scripts/make-stable.ps1` that cre
 # Snapshot only
 pwsh scripts/make-stable.ps1
 
-# Fresh WASM build + snapshot (requires em++ on PATH)
+# Native + WASM build (if em++ available) then snapshot
 pwsh scripts/make-stable.ps1 -Build
+
+# Only native build then snapshot
+pwsh scripts/make-stable.ps1 -Native
+
+# Only WASM build then snapshot
+pwsh scripts/make-stable.ps1 -Wasm
+
+# Enforce toolchain presence (fails if missing)
+pwsh scripts/make-stable.ps1 -Build -Strict
 ```
 
 Notes

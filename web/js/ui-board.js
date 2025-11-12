@@ -20,7 +20,11 @@
     const fen = $('#ioText').val().trim();
     if (!fen) { alert('Paste a FEN into the textbox first.'); return; }
     const score = EngineBridge.evaluateFEN(fen);
-    $('#score').text((score >= 0 ? '+' : '') + Math.round(score/100));
+    if (score === null) {
+      $('#score').text('engine-unavailable');
+    } else {
+      $('#score').text((score >= 0 ? '+' : '') + Math.round(score/100));
+    }
     addMove('Loaded FEN');
   });
 
@@ -28,10 +32,9 @@
   setInterval(() => {
     const side = $('#sideSelect').val();
     if (side === 'observe') {
-      // Use config randomness to vary the simulated move text slightly
-      const r = (cfg?.search?.randomness ?? 0) / 100;
+      // Pure UI-only random placeholder; not chess engine business logic.
       const moves = ['e4','d4','c4','Nf3'];
-      const pick = Math.random() < r ? Math.floor(Math.random()*moves.length) : 0;
+      const pick = Math.floor(Math.random()*moves.length);
       addMove(moves[pick] + ' (simulated)');
     }
   }, 5000);
