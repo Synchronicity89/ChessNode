@@ -70,6 +70,15 @@
       if (document.querySelector('[data-pages-incompatible][disabled]')) msgs.push('some controls are disabled on static hosting');
       if (msgs.length) explainOnce('Limited features: ' + msgs.join('; ') + '.');
     }
+
+    // Update engine status indicator if present
+    try {
+      const el = document.getElementById('engineStatus');
+      if (el){
+        if (caps.wasm){ el.textContent = 'ready'; el.classList.remove('bad'); el.classList.add('ok'); }
+        else { el.textContent = 'unavailable'; el.classList.remove('ok'); el.classList.add('bad'); }
+      }
+    } catch {}
   }
 
   // (Policy application now triggered by finalizeCaps)

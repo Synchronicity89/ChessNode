@@ -21,7 +21,7 @@
     <section class="board-panel">
       <div id="board" class="board-placeholder">Board will render here</div>
       <div class="controls">
-        <button id="newGame">New Game</button>
+  <button id="newGame" class="primary">New Game</button>
         <label>
           Side:
           <select id="sideSelect">
@@ -47,6 +47,7 @@
       <ol id="moveList"></ol>
       <h2>Score</h2>
       <div id="score">--</div>
+  <div id="engineStatusRow">Engine: <span id="engineStatus">detecting…</span></div>
       <h2>Evaluation</h2>
       <div id="evalControls">
         <div class="row"><label>P <input id="w_p" type="number" value="100" step="10"></label>
