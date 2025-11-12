@@ -70,6 +70,17 @@ const EngineBridge = (() => {
     return null; // engine not available
   }
 
+  function evaluateFENOptions(fen, options){
+    if (wasmReady && Module && Module.cwrap) {
+      try {
+        const fn = Module.cwrap('evaluate_fen_opts', 'number', ['string','string']);
+        const opt = options ? JSON.stringify(options) : null;
+        if (fn) return fn(fen||'', opt);
+      } catch(e){}
+    }
+    return null;
+  }
+
   function generateDescendants(fen, depth, nplus1, options){
     // WASM path: prefer configurable entry if available
     if (wasmReady && Module && Module.cwrap) {
@@ -107,7 +118,19 @@ const EngineBridge = (() => {
     return null;
   }
 
-  return { init, getVersion, evaluateFEN, generateDescendants, listLegalMoves, applyMoveIfLegal };
+  function evaluateMoveLine(fen, moves, options){
+    if (wasmReady && Module && Module.cwrap){
+      try {
+        const fn = Module.cwrap('evaluate_move_line','string',['string','string','string']);
+        const opt = options ? JSON.stringify(options) : null;
+        const movesJson = JSON.stringify(moves || []);
+        return fn(fen||'', movesJson, opt);
+      } catch(e){}
+    }
+    return null;
+  }
+
+  return { init, getVersion, evaluateFEN, evaluateFENOptions, evaluateMoveLine, generateDescendants, listLegalMoves, applyMoveIfLegal };
 })();
 
 // Expose bridge on window for pages/scripts that reference window.EngineBridge

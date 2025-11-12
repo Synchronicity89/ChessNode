@@ -49,9 +49,10 @@ function Invoke-WasmBuild {
     '-std=c++17','-O3',
     (Join-Path $engineDir 'src\example.cpp'),
     (Join-Path $engineDir 'src\fen.cpp'),
+    (Join-Path $engineDir 'src\eval.cpp'),
     (Join-Path $engineDir 'src\descendants.cpp'),
     ("-I" + (Join-Path $engineDir 'include')),
-    '-sEXPORTED_FUNCTIONS=["_evaluate_fen","_engine_version","_generate_descendants","_generate_descendants_opts","_list_legal_moves","_apply_move_if_legal"]',
+    '-sEXPORTED_FUNCTIONS=["_evaluate_fen","_evaluate_fen_opts","_engine_version","_generate_descendants","_generate_descendants_opts","_list_legal_moves","_apply_move_if_legal","_evaluate_move_line"]',
     '-sEXPORTED_RUNTIME_METHODS=["cwrap"]',
     '-sMODULARIZE=1','-sEXPORT_NAME=EngineModule',
     '-o', (Join-Path $webWasmDir 'engine.js')

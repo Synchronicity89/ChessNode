@@ -7,6 +7,7 @@
   let selectedSq = null; // algebraic like 'e2'
   let legalCache = []; // cached legal moves for current position
   let cfg = (window.EngineConfig && window.EngineConfig.load()) || null;
+  let evalCfg = (window.EngineEvalConfig && window.EngineEvalConfig.load()) || null;
 
   function addMove(label) {
     const li = $('<li>').text(ply + '. ' + label);
@@ -63,6 +64,21 @@
     } catch { legalCache=[]; }
   }
 
+  function refreshEvalScore(){
+    if (!window.EngineBridge) { $('#score').text('engine-unavailable'); return; }
+    evalCfg = (window.EngineEvalConfig && window.EngineEvalConfig.load()) || evalCfg;
+    const opts = evalCfg ? window.EngineEvalConfig.toEngineOptions(evalCfg) : null;
+    let cp = null;
+    if (window.EngineBridge.evaluateFENOptions && opts){
+      cp = window.EngineBridge.evaluateFENOptions(currentFen, opts);
+    } else if (window.EngineBridge.evaluateFEN){
+      cp = window.EngineBridge.evaluateFEN(currentFen);
+    }
+    if (cp===null || cp===undefined){ $('#score').text('engine-unavailable'); return; }
+    const pawns = (cp/100).toFixed(3);
+    $('#score').text((cp>=0?'+':'') + pawns);
+  }
+
   function onCellClick(alg, piece){
     if (!selectedSq){
       // Select only if it has at least one legal move
@@ -105,6 +121,7 @@
         selectedSq=null;
         refreshLegal();
         renderBoard();
+        refreshEvalScore();
       } else {
         // Illegal or error
         selectedSq=null; renderBoard();
@@ -117,6 +134,7 @@
   $('#newGame').on('click', () => {
     moveListEl.empty(); ply=1; currentFen='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     refreshLegal(); renderBoard(); addMove('Game start');
+    refreshEvalScore();
   });
 
   $('#loadFen').on('click', () => {
@@ -126,6 +144,7 @@
     const score = EngineBridge.evaluateFEN(fen);
     $('#score').text(score===null? 'engine-unavailable' : ((score>=0?'+':'')+Math.round(score/100)) );
     refreshLegal(); renderBoard(); addMove('Loaded FEN');
+    refreshEvalScore();
   });
 
   // Self-play observe mode placeholder (still random, not engine logic)
@@ -136,10 +155,21 @@
       const mv = legalCache[idx];
       selectedSq = mv.from; onCellClick(mv.to,'');
     }
+    // If human vs engine: pick random reply for the engine side (weak baseline)
+    if ((side === 'white' || side === 'black') && legalCache.length){
+      const stm = currentFen.split(' ')[1];
+      const humanSide = side === 'white' ? 'w' : 'b';
+      if (stm !== humanSide){
+        const idx = Math.floor(Math.random()*legalCache.length);
+        const mv = legalCache[idx];
+        selectedSq = mv.from; onCellClick(mv.to,'');
+      }
+    }
   }, 6000);
 
   $(function(){
     if (cfg?.search?.maxDepth) $('#depth').val(String(cfg.search.maxDepth));
     refreshLegal(); renderBoard(); addMove('Game start');
+    refreshEvalScore();
   });
 })();

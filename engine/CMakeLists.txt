@@ -9,6 +9,7 @@ add_library(chess_engine STATIC
     src/example.cpp
     src/descendants.cpp
     src/fen.cpp
+    src/eval.cpp
 )
 
 target_include_directories(chess_engine PUBLIC include)

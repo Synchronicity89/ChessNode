@@ -144,6 +144,34 @@ int main() {
         std::cerr << "FAIL: could not complete regression sequence" << std::endl; failures++;
     }
 
+    // --- Evaluation tests (configurable, white-centric centipawns) ---
+    // Default options should match basic material eval
+    int e_default = evaluate_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+    int e_opts = evaluate_fen_opts("4k3/8/8/8/8/8/8/4K3 w - - 0 1", "{}");
+    assert_eq("eval opts matches default", e_opts, e_default);
+
+    // Changing queen weight should affect score
+    int e_wq900 = evaluate_fen_opts("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1", "{\"weights\":{\"q\":900}}" );
+    int e_wq1200 = evaluate_fen_opts("4k3/8/8/8/8/8/8/Q3K3 w - - 0 1", "{\"weights\":{\"q\":1200}}" );
+    if (!(e_wq1200 > e_wq900)) { std::cerr << "FAIL: increasing queen weight should raise eval" << std::endl; failures++; }
+
+    // Tempo term: add +10 for white to move; -10 for black to move
+    int e_tempo_w = evaluate_fen_opts("4k3/8/8/8/8/8/8/4K3 w - - 0 1", "{\"terms\":{\"tempo\":true},\"tempo\":10}");
+    int e_tempo_b = evaluate_fen_opts("4k3/8/8/8/8/8/8/4K3 b - - 0 1", "{\"terms\":{\"tempo\":true},\"tempo\":10}");
+    if (!(e_tempo_w - e_tempo_b == 20)) { std::cerr << "FAIL: tempo term not applied symmetrically" << std::endl; failures++; }
+
+    // Line evaluation: simple capture sequence should end up +100 for white (material-only)
+    const char* capStart = "4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1"; // black pawn d4, white pawn e2 -> e2e4 d4e3 e2xe3 illegal; instead: e2e3 d4e3?? can't. Use e2xd3 from other setup
+    const char* capStart2 = "4k3/8/8/8/8/3p4/4P3/4K3 w - - 0 1"; // black pawn d3, white pawn e2 -> e2xd3
+    const char* lineJson = evaluate_move_line(capStart2, "[\"e2d3\"]", "{\"terms\":{\"material\":true}}" );
+    if (!lineJson) { std::cerr << "FAIL: evaluate_move_line returned null" << std::endl; failures++; }
+    if (lineJson) {
+        std::string s(lineJson);
+        auto p = s.find("\"finalEval\":");
+        if (p==std::string::npos) { std::cerr << "FAIL: evaluate_move_line missing finalEval" << std::endl; failures++; }
+        else { int val = std::atoi(s.c_str()+p+12); if (val < 90) { std::cerr << "FAIL: capture line finalEval too small: "<<val << std::endl; failures++; } }
+    }
+
     if (failures) return 1;
     std::cout << "OK" << std::endl;
     return 0;

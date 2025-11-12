@@ -47,6 +47,22 @@
       <ol id="moveList"></ol>
       <h2>Score</h2>
       <div id="score">--</div>
+      <h2>Evaluation</h2>
+      <div id="evalControls">
+        <div class="row"><label>P <input id="w_p" type="number" value="100" step="10"></label>
+          <label>N <input id="w_n" type="number" value="300" step="10"></label>
+          <label>B <input id="w_b" type="number" value="300" step="10"></label></div>
+        <div class="row"><label>R <input id="w_r" type="number" value="500" step="10"></label>
+          <label>Q <input id="w_q" type="number" value="900" step="10"></label>
+          <label>K <input id="w_k" type="number" value="0" step="10"></label></div>
+        <div class="row"><label><input id="t_material" type="checkbox" checked> Material</label>
+          <label><input id="t_tempo" type="checkbox"> Tempo</label>
+          <label>Tempo cp <input id="tempo_cp" type="number" value="10" step="1"></label></div>
+        <div class="row">
+          <button id="saveEval">Save Eval Settings</button>
+          <button id="applyEval">Apply Now</button>
+        </div>
+      </div>
       <div class="io">
         <button id="savePgn" data-pages-incompatible title="Saves to local file (not available on static host)">Save PGN</button>
         <button id="loadPgn" data-pages-incompatible title="Loads from local file (not available on static host)">Load PGN</button>
@@ -58,6 +74,7 @@
   <script src="js/host-capabilities.js"></script>
   <script src="js/ui-id-hint.js"></script>
   <script src="js/ui-engine-bridge.js"></script>
+  <script src="js/ui-eval-config.js"></script>
   <script src="js/ui-config.js"></script>
   <script src="js/ui-board.js"></script>
 </body>
