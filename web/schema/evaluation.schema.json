@@ -1,0 +1,134 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://example.com/schemas/evaluation.schema.json",
+  "title": "EvaluationConfig",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": { "type": "integer", "const": 2 },
+    "opponentPlyDepth": { "type": "integer", "minimum": 0, "maximum": 64, "default": 4 },
+    "tradePlyDepthEquivalent": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.5 },
+    "plyDepthRisk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["exponential", "logistic"], "default": "exponential" },
+        "kAt2x": { "type": "number", "minimum": 1, "default": 100 },
+        "slope": { "type": "number", "minimum": 0, "default": 5 },
+        "midpointMultiplier": { "type": "number", "minimum": 0.5, "maximum": 3, "default": 1.0 },
+        "riskPow": { "type": "number", "minimum": 0, "default": 1.0 },
+        "gainScale": { "type": "number", "minimum": 0, "default": 1.0 },
+        "lossScale": { "type": "number", "minimum": 0, "default": 1.0 },
+        "blendAlpha": { "type": "number", "minimum": 0, "maximum": 1, "default": 1.0 },
+        "riskOffset": { "type": "number", "default": 0 },
+        "riskCap": { "type": ["number", "null"], "default": null }
+      },
+      "required": ["type"]
+    },
+    "weights": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "p": { "type": "integer", "default": 100 },
+        "n": { "type": "integer", "default": 300 },
+        "b": { "type": "integer", "default": 300 },
+        "r": { "type": "integer", "default": 500 },
+        "q": { "type": "integer", "default": 900 },
+        "k": { "type": "integer", "default": 0 }
+      },
+      "required": ["p","n","b","r","q","k"]
+    },
+    "terms": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "material": { "type": "boolean", "default": true },
+        "tempo": { "type": "boolean", "default": false }
+      },
+      "required": ["material", "tempo"]
+    },
+    "tempo": { "type": "integer", "default": 10 },
+
+    "centerPiecePlacementReward": { "type": "number", "default": 50 },
+    "centerPieceWeights": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "p": { "type": "number", "default": 1.0 },
+        "n": { "type": "number", "default": 1.0 },
+        "b": { "type": "number", "default": 1.0 },
+        "r": { "type": "number", "default": 1.0 },
+        "q": { "type": "number", "default": 1.0 },
+        "k": { "type": "number", "default": 0.0 }
+      },
+      "required": ["p","n","b","r","q","k"]
+    },
+    "centerPlacementOffset": { "type": "number", "default": 0 },
+    "centerPlacementCap": { "type": ["number", "null"], "default": null },
+
+    "endGameKingCenterMagnet": { "type": "number", "default": 15 },
+    "endgamishnessPow": { "type": "number", "default": 1.0 },
+    "kingCenterImprovementPow": { "type": "number", "default": 1.0 },
+    "kingCenterOffset": { "type": "number", "default": 0 },
+    "kingCenterCap": { "type": ["number", "null"], "default": null },
+
+    "rankAttackFactor": { "type": "number", "default": 1.1 },
+    "developmentIncentive": { "type": "number", "default": 10 },
+    "developmentGamma": { "type": "number", "default": 1.0 },
+    "developmentOffset": { "type": "number", "default": 0 },
+    "developmentCap": { "type": ["number", "null"], "default": null },
+    "notJustEmptySquaresThreatReward": { "type": "boolean", "default": true },
+
+    "endgamishness": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "form": { "type": "string", "enum": ["linear", "logistic"], "default": "linear" },
+        "pieceWeightMinor": { "type": "number", "default": 3 },
+        "pieceWeightRook": { "type": "number", "default": 5 },
+        "pieceWeightQueen": { "type": "number", "default": 9 },
+        "T": { "type": "number", "default": 31 },
+        "L": { "type": "number", "default": 6 },
+        "min": { "type": "number", "default": 0 },
+        "max": { "type": "number", "default": 1 },
+        "slope": { "type": "number", "default": 5 },
+        "midpoint": { "type": "number", "default": 1.0 }
+      },
+      "required": ["form","pieceWeightMinor","pieceWeightRook","pieceWeightQueen","T","L","min","max"]
+    },
+
+    "kingEngineValue": { "type": "integer", "default": 7000 },
+    "kingOpponentValue": { "type": "integer", "default": 5000 },
+
+    "mix": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "weightCenter": { "type": "number", "default": 1.0 },
+        "weightKingCenter": { "type": "number", "default": 1.0 },
+        "weightDevelopment": { "type": "number", "default": 1.0 },
+        "weightRisk": { "type": "number", "default": 1.0 },
+        "totalOffset": { "type": "number", "default": 0 },
+        "totalCap": { "type": ["number", "null"], "default": null }
+      },
+      "required": ["weightCenter","weightKingCenter","weightDevelopment","weightRisk","totalOffset","totalCap"]
+    }
+  },
+  "required": [
+    "version",
+    "opponentPlyDepth",
+    "tradePlyDepthEquivalent",
+    "plyDepthRisk",
+    "weights",
+    "terms",
+    "tempo",
+    "centerPiecePlacementReward",
+    "endGameKingCenterMagnet",
+    "rankAttackFactor",
+    "developmentIncentive",
+    "notJustEmptySquaresThreatReward",
+    "kingEngineValue",
+    "kingOpponentValue",
+    "mix"
+  ]
+}
