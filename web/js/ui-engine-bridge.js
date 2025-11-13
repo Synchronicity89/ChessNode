@@ -24,7 +24,14 @@ const EngineBridge = (() => {
     const mode = await detectWasm();
     if (mode === 'emscripten-js') {
       try {
-        await loadScript('wasm/engine.js');
+        // Cache-bust engine.js to ensure latest build is loaded in the browser
+        const bust = Date.now();
+        try {
+          await loadScript('wasm/engine.js?v=' + bust);
+        } catch (e) {
+          // Fallback without cache buster
+          await loadScript('wasm/engine.js');
+        }
         if (typeof window.EngineModule === 'function') {
           Module = await window.EngineModule();
           wasmReady = true;
@@ -130,7 +137,29 @@ const EngineBridge = (() => {
     return null;
   }
 
-  return { init, getVersion, evaluateFEN, evaluateFENOptions, evaluateMoveLine, generateDescendants, listLegalMoves, applyMoveIfLegal };
+  function chooseBestMove(fen, options){
+    if (wasmReady && Module && Module.cwrap){
+      try {
+        const fn = Module.cwrap('choose_best_move','string',['string','string']);
+        const opt = options ? JSON.stringify(options) : null;
+        return fn(fen||'', opt);
+      } catch(e){}
+    }
+    return null;
+  }
+
+  function scoreChildren(fen, options){
+    if (wasmReady && Module && Module.cwrap){
+      try {
+        const fn = Module.cwrap('score_children','string',['string','string']);
+        const opt = options ? JSON.stringify(options) : null;
+        return fn(fen||'', opt);
+      } catch(e){}
+    }
+    return null;
+  }
+
+  return { init, getVersion, evaluateFEN, evaluateFENOptions, evaluateMoveLine, generateDescendants, listLegalMoves, applyMoveIfLegal, chooseBestMove, scoreChildren };
 })();
 
 // Expose bridge on window for pages/scripts that reference window.EngineBridge

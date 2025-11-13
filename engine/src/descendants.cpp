@@ -441,3 +441,13 @@ extern "C" const char* apply_move_if_legal(const char* fen, const char* uciMove,
     }
     g_lastJson = "{\"error\":\"illegal\"}"; return g_lastJson.c_str();
 }
+
+// Utility: expose side-to-move in-check as a C API for eval.cpp extensions
+extern "C" int side_in_check(const char* fen){
+    Pos p; if (!parseFEN(fen, p)) return 0;
+    bool white = (p.stm=='w');
+    auto k = findKing(p, white);
+    if (k.first<0) return 0;
+    Options opt; // defaults fine; castling not needed for attacks
+    return squareAttackedBy(p, k.first, k.second, !white, opt) ? 1 : 0;
+}

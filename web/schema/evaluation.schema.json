@@ -79,6 +79,10 @@
     "developmentCap": { "type": ["number", "null"], "default": null },
     "notJustEmptySquaresThreatReward": { "type": "boolean", "default": true },
 
+  "castleKingSideReward": { "type": "number", "default": 60 },
+  "castleQueenSideReward": { "type": "number", "default": 60 },
+  "kingNonCastleMovePenalty": { "type": "number", "default": 100 },
+
     "endgamishness": {
       "type": "object",
       "additionalProperties": false,

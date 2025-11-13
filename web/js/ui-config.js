@@ -7,7 +7,7 @@
     return {
       version: 1,
       search: {
-        maxDepth: 12,
+        maxDepth: 6,
         timeMs: 3000,
         aspWindow: 75,
         nullMove: true,

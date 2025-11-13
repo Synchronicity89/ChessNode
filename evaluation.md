@@ -19,6 +19,11 @@ The evaluation combines base terms (material, tempo, etc.) with line-based incen
   "rankAttackFactor": 1.1,
   "developmentIncentive": 10,
   "notJustEmptySquaresThreatReward": true,
+  "castleKingSideReward": 60,
+  "castleQueenSideReward": 50,
+  "kingNonCastleMovePenalty": 110,
+  "forceKnightCenterLoop": false,
+  "developmentOpponentWeight": 1.0,
   "kingEngineValue": 7000,
   "kingOpponentValue": 5000
 }
@@ -46,6 +51,11 @@ The evaluation combines base terms (material, tempo, etc.) with line-based incen
 - rankAttackFactor: numeric input; 1.0–1.5 (default 1.1).
 - developmentIncentive: numeric input; 0–50 (default 10).
 - notJustEmptySquaresThreatReward: checkbox (default checked).
+- castleKingSideReward: numeric input; 0–200 (default 60).
+- castleQueenSideReward: numeric input; 0–200 (default 50).
+- kingNonCastleMovePenalty: numeric input; 0–300 (default 110).
+- forceKnightCenterLoop: checkbox (default unchecked).
+- developmentOpponentWeight: numeric input; 0.0–2.0 (default 1.0).
 - kingEngineValue: numeric input; 1000–20000 (default 7000).
 - kingOpponentValue: numeric input; 1000–20000 (default 5000).
 
@@ -131,16 +141,59 @@ Let a “line” be a sequence of moves and countermoves from a given FEN. Evalu
 - Improvement = max(0, distStart − distEnd).
 - Reward = endGameKingCenterMagnet × endgamishness × Improvement.
 
-4) Development and forward control
-- Identify squares controlled by the engine in the opponent’s half. For each controlled square s, compute its forward rank depth r (1 for the first rank into opponent territory, 2 for the next, etc.).
-- Sum reward per unique controlled square:
+4) Development and forward control (piece-weighted)
+- Identify squares controlled by the engine in the opponent’s half. For each controlled square s, compute its forward rank depth r (1 for the first rank into opponent territory, 2 for the next, etc.). Count each square at most once, using the strongest own controller as the square’s “strength”.
 
-  Reward_s = developmentIncentive × (rankAttackFactor)^r
+  Let V(p) be the piece value (from the GUI weights; e.g., p=1, n=b=3, r=5, q=9, k configurable but typically 0 for this term) normalized to pawns: Vn(p) = weights[piece]/weights[pawn].
+
+  Phase shaping for queen centralization: use a midgame “hump” so the queen isn’t rewarded early or in the late endgame:
+
+  - Let e ∈ [0,1] be endgamishness (see above). Define hump(e) = 4·e·(1−e), peaking at e=0.5.
+  - Define phaseScale(p, e) = hump(e) for queen, and 1.0 for other pieces (rook/knight/bishop/pawn). King is handled by the king-centering term.
+
+  Then the reward per unique controlled square is:
+
+  Reward_s = developmentIncentive × Vn(p_max) × phaseScale(p_max, e) × (rankAttackFactor)^r
+
+  where p_max is the strongest own piece that (legally) attacks s.
 
 - If notJustEmptySquaresThreatReward is true, count squares even when occupied by opponent pieces (threats); otherwise only empty squares.
-- Use the net gain in such controlled squares from start to end of line.
+- Use the net change in this piece-weighted control sum from start to end of line. In practice, you should also account for the opponent’s development so that pure “self-sabotage” is correctly punished by the opponent’s improved posture. A simple approach is to subtract a scaled opponent term:
 
-5) Risk-aware gain vs loss beyond depth
+  NetDevelopment = OwnDevelopment − developmentOpponentWeight × OpponentDevelopment
+
+  where OpponentDevelopment mirrors the same piece-weighted control calculation from the opponent’s perspective.
+
+  Undevelopment handling:
+  - If, on the engine’s turn within a line, an own piece “undevelops” (e.g., retreats so that the net development/control score decreases relative to just before that move), the line is penalized by the corresponding loss in development. This makes retreating or shuffling moves that cede space/control unattractive unless they unlock compensating gains elsewhere in the line.
+  - Conversely, if the opponent undevelops on their turn (their net development/control decreases), the line is rewarded by the same magnitude (since it benefits the engine). This symmetry follows the existing opponent inversion used elsewhere in evaluation.
+  - This clause applies to the same development metric described above (unique controlled squares in the opponent’s half, shaped by rankAttackFactor and developmentIncentive). It does not double-count; it simply ensures that backward moves that reduce pressure are reflected immediately as negative deltas for the side that made them.
+
+    Threatened occupied squares and defense-delta (toggle-enabled):
+    - When the GUI checkbox "Count threatened occupied squares" is enabled, additionally consider the material being defended/covered by each side at the end of a line versus the start.
+    - Compute DefendedMaterial(side) as the sum of values (using current weights) of own pieces that are attacked/defended by at least one own piece at the end position. Compare to the same sum at the start.
+    - If the engine side’s DefendedMaterial increases along the line, add a small relative bonus proportional to the delta; if it decreases, subtract the same magnitude.
+    - Symmetrically, if the opponent’s DefendedMaterial increases, subtract a bonus of the same magnitude (i.e., treat it as bad for us); if it decreases, add the magnitude.
+    - This defense-delta term is gated by the same checkbox and should be tuned conservatively (start with a low multiplier) to avoid overfitting. It complements development control by rewarding lines that end with more pieces mutually supporting each other or covering higher-value targets.
+
+5) Castling rights and king movement
+
+- Rewards for using castling rights:
+  - If a line includes the engine side castling king-side: add +castleKingSideReward.
+  - If a line includes the engine side castling queen-side: add +castleQueenSideReward.
+
+- Penalties for losing castling rights without castling:
+  - If, in the line, the engine king-side rook moves for the first time and that movement results in the engine no longer being able to castle king-side, subtract castleKingSideReward (punishment equals the corresponding reward).
+  - Likewise for the queen-side rook and queen-side castling: subtract castleQueenSideReward if that right is lost due to the rook’s first move.
+  - If the engine king moves at any point in the line other than castling, subtract kingNonCastleMovePenalty (default 110 cp).
+
+- Opponent inversion:
+  - Apply the same costing inversely for the opponent’s actions in the line. If the opponent castles, it’s bad for us; if they lose a castling right or move their king (non-castle), it’s good for us with the same magnitudes. This ensures line scores reflect both sides’ castling decisions.
+
+Notes:
+- “Results in losing castling rights” follows the usual chess rules: once the corresponding rook (or king) has moved, that side’s castling right on that side is irrevocably lost for the remainder of the game. The penalty triggers only on the first such loss event per side and per flank in the evaluated line, and only when that loss wasn’t caused by actually castling on that flank.
+
+6) Risk-aware gain vs loss beyond depth
 - Let d_eq be the line’s ply-equivalent depth (see above).
 - Let risk = plyDepthRiskFunction(d_eq).
 - Estimate potentialLoss (e.g., worst plausible tactical refutation value) and potentialGain (e.g., material/positional edge realized by the line). These can be approximated from engine deltas or heuristics.
@@ -152,7 +205,7 @@ Let a “line” be a sequence of moves and countermoves from a given FEN. Evalu
 
 - Intuition: As depth grows past D, we trust gains less and fear losses less, reflecting the belief that the opponent cannot fully refute very deep ideas. For equal magnitudes, safer lines near D will have small adjustments; deep speculative lines will be favored if their discounted expected value stays positive.
 
-6) Mating value handling
+7) Mating value handling
 - If a forced mate is proven within the line, apply a large but finite terminal value rather than an absurd score to avoid pathological gambling.
   - If engine mates: add +kingOpponentValue (optionally scaled by 1/(plyToMate+1)).
   - If engine is mated: subtract kingEngineValue (optionally scaled).
@@ -166,7 +219,8 @@ At end of line:
 Score(line) = BaseEval(finalFEN)
             + CenterPlacementReward
             + KingCenterReward
-            + DevelopmentReward
+            + DevelopmentReward (piece-weighted)
+            + CastlingAndKingMovement
             + LineRiskBonus
 ```
 
@@ -179,6 +233,13 @@ Score(line) = BaseEval(finalFEN)
 - Group controls under sections: Opponent Model, Board Geometry Rewards, Development, King and Mate Values, Risk Model.
 - Show inline help tooltips explaining each control and its default.
 - When Greedy 1-ply is active, these settings directly influence the engine’s move choice.
+
+### Manual testing toggle: Knight center loop
+
+- forceKnightCenterLoop (checkbox): when enabled, the engine will deliberately play a “knight loop” from the starting position, repeatedly moving a knight towards the center and then back, ignoring other reasonable moves. This is intended for manual testing that the evaluation properly rewards the opponent’s central and developmental gains even without captures.
+- Expected behavior for validation:
+  - If the engine is Black, as White advances sensibly, the best-line scores should trend positive for White (negative from Black’s perspective) even before any material is taken, reflecting White’s central space and development lead.
+  - The development term should incorporate the opponent’s gains (see developmentOpponentWeight) so that idle or self-sabotaging engine play is correctly penalized by the opponent’s improved control and piece activity.
 
 ## Example
 
@@ -196,6 +257,43 @@ Score(line) = BaseEval(finalFEN)
 ---
 
 This specification is intentionally modular. Future terms (mobility, pawn structure, king safety) can be added with independent weights and switches without changing the existing GUI contract.
+
+## Search Continuation and Cutoffs (General Rules)
+
+These rules govern how far a candidate line should be explored, independently of the nominal depth settings. They ensure that tactical truth (e.g., checks, trades, promotions) is not artificially truncated at uniform depth boundaries.
+
+1) Check extension (always-on)
+
+- If a position at the end of a partial line is in check (either side), continue the line with checking moves until one of the following occurs:
+  - Checkmate (terminal), or
+  - No further legal checking move is available (check has been parried or escaped).
+- This continuation does not count toward any “extra ply” rules below; it is a structural extension to correctly resolve checking sequences.
+
+2) Threefold repetition within a line (cutoff)
+
+- If, during exploration of a single line, the exact same position (FEN with side-to-move, castling rights, en-passant state, etc.) is reached for the third time, stop searching further on that line.
+- Rationale: the line is a theoretical draw under the threefold repetition rule; further exploration won’t change the outcome without external constraints.
+
+3) Threefold repetition over the full game (informational)
+
+- If, in an actual played game starting from the standard initial position, the exact same position is reached three times at any points in the move history, the game is a draw by the rules of chess.
+- The engine’s search should recognize this state and annotate/evaluate lines accordingly when the game’s repetition condition is met.
+
+4) Material-swing/Promotion extension (trade completion)
+
+- If, at any point along a candidate line, the net material balance changes (either side loses material via capture or gains via promotion), extend that particular line by at least one additional non-check ply to allow immediate recapture/compensation to be expressed in the evaluation.
+- Any intervening checking moves along that path do not count toward this “one more ply” requirement (they are covered by the check-extension rule). The intent is to see the first non-check reply after the swing.
+- This rule naturally produces ragged lines where some branches are longer than others; this is intended. It reduces bias from 2-ply truncations that otherwise mis-score sound central breaks (e.g., …d5) simply because a recapture exists at shallow depth.
+
+5) Trade recognition (even exchanges)
+
+- When a capture is followed by an equal-value recapture within the next 1–2 plies (same square or a short exchange sequence), treat the pair as a trade and ensure the line covers the completion of that recapture before scoring the position. This is a specialization of the material-swing rule and helps stabilize evaluations in highly tactical central exchanges.
+
+Implementation notes:
+- These extensions and cutoffs are orthogonal to the ply-equivalent accounting and risk model described above. A practical approach is:
+  - Apply check-extension and material-swing extension as “forced” local depth increases for affected nodes (extensions).
+  - Apply threefold repetition as an immediate terminal with draw evaluation (cutoff).
+- The resulting tree becomes irregular (non-uniform depth). All scoring, PV extraction, and UI reporting should use the actual explored plies for each line.
 
 ## Atomic GUI control requirement (per-operation knobs)
 
@@ -231,6 +329,7 @@ Below is a non-exhaustive mapping of the formulas in this document to atomic con
 - developmentGamma: exponent on (rankAttackFactor^r) to shape growth (default 1.0)
 - developmentOffset, developmentCap: additive offset and clamp (defaults 0, disabled)
 - notJustEmptySquaresThreatReward: include occupied threat squares (existing)
+- piece-weighted control: development uses weights from the GUI (p,n,b,r,q,k); normalize by pawn weight for Vn(p). Add a queenPhaseCurve toggle in the future if you want to switch off the hump.
 
 4) Risk-aware gain vs loss beyond depth
 - kAt2x / logistic parameters: shape of risk(d) (existing)
@@ -252,6 +351,27 @@ Below is a non-exhaustive mapping of the formulas in this document to atomic con
 - totalOffset, totalCap: additive offset and clamp on the final score (defaults 0, disabled)
 
 ### Neutral defaults and iterative evolution
+
+## Engine-side orientation (white vs black)
+
+All raw evaluations are white-centric centipawns: positions favorable to White are positive. To compare lines for the engine regardless of side-to-move, we compute an orientation factor at the root:
+
+- engineSide = +1 if the engine side at root is White; −1 if it is Black.
+
+Before search comparisons, we convert a line’s white-centric score S into engine-centric S_e = engineSide × S. The search then always maximizes S_e and uses standard alpha/beta bounds in engine-centric space. This avoids branching code with if (white) maximize else minimize and keeps the JSON/debug output in white-centric units for readability.
+
+Implementation notes:
+- combinedScore remains white-centric.
+- In alpha–beta: compare and bound on S_e, not S.
+- For reporting: return S so UI and logs remain consistent with centipawn conventions.
+
+## Notes on Ragged Search Depths
+
+Because of check and material-swing extensions (and repetition cutoffs), different lines will often end at different depths. This irregularity is expected and desirable. Over time, rework code paths that assume uniform depth so that:
+
+- Alpha–beta and PV tracking operate on nodes extended by checks and trades without imposing a flat ply cap.
+- JSON outputs include both the intended depth setting and the actual explored plies for each candidate line.
+- Tests tolerant of ragged depths focus on ordering/relative scores rather than a fixed ply count where appropriate.
 
 - All new knobs must ship with neutral defaults that preserve existing behavior (e.g., offsets 0, multiplicative scales 1.0, caps disabled, exponents 1.0).
 - When introducing a new evaluation operation, add:

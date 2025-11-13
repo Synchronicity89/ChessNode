@@ -17,7 +17,7 @@
       <a href="engine-dev.html">Dev</a>
     </nav>
   </header>
-  <main class="layout">
+  <main class="layout" data-requires-wasm>
     <section class="board-panel">
       <div id="board" class="board-placeholder">Board will render here</div>
       <div class="controls">
@@ -31,15 +31,8 @@
           </select>
         </label>
         <label>
-          Engine Mode:
-          <select id="engineMode">
-            <option value="random">Random</option>
-            <option value="greedy1">Greedy 1-ply (uses Evaluation)</option>
-          </select>
-        </label>
-        <label>
           Depth:
-          <input id="depth" type="number" value="10" min="1" max="99" />
+          <input id="depth" type="number" value="6" min="1" max="99" />
         </label>
         <label>
           Show PV <input id="showPv" type="checkbox" checked>
@@ -49,12 +42,16 @@
         </label>
       </div>
     </section>
-    <section class="sidebar">
+    <section class="sidebar" data-requires-wasm>
       <h2>Moves</h2>
       <ol id="moveList"></ol>
       <h2>Score</h2>
       <div id="score">--</div>
   <div id="engineStatusRow">Engine: <span id="engineStatus">detecting…</span></div>
+    <h2>Activity</h2>
+    <div id="activityLog" aria-live="polite"></div>
+    <h2>Position (FEN)</h2>
+    <textarea id="fenDisplay" readonly style="width:100%;height:60px;font-family:monospace;"></textarea>
       <h2>Evaluation</h2>
       <div id="evalControls">
         <h3>Opponent model</h3>
@@ -96,6 +93,13 @@
         <div class="row">
           <label>Center placement reward <input id="center_reward" type="number" value="50" step="5"></label>
           <label>King center magnet <input id="king_center_mag" type="number" value="15" step="1"></label>
+        </div>
+
+        <h3>Castling / King</h3>
+        <div class="row">
+          <label>Castle K-side reward <input id="castle_k_reward" type="number" value="60" step="5"></label>
+          <label>Castle Q-side reward <input id="castle_q_reward" type="number" value="60" step="5"></label>
+          <label>King non-castle penalty <input id="king_noncastle_pen" type="number" value="100" step="5"></label>
         </div>
 
         <h3>Development</h3>

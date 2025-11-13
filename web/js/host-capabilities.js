@@ -61,6 +61,23 @@
     // Elements annotated with data-requires-wasm should be disabled if wasm missing.
     if (!caps.wasm){
       document.querySelectorAll('[data-requires-wasm]').forEach(el=>disableElement(el,'WASM engine not available here'));
+      // Hard-disable the whole GUI and show an error overlay in red
+      try {
+        if (!document.getElementById('wasmErrorOverlay')){
+          const ov = document.createElement('div');
+          ov.id = 'wasmErrorOverlay';
+          ov.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.6);z-index:99999;';
+          const msg = document.createElement('div');
+          msg.style.cssText = 'max-width:800px;margin:0 16px;padding:16px 20px;border:2px solid #b00020;background:#fff0f0;color:#b00020;font-family:system-ui,Segoe UI,Arial,sans-serif;font-size:16px;line-height:1.5;border-radius:6px;box-shadow:0 4px 20px rgba(0,0,0,0.3)';
+          msg.innerHTML = '<strong>Engine Unavailable:</strong> The C++ chess engine (WASM) failed to load, so the GUI is disabled.<br>'+
+                           'Please ensure the <code>wasm/engine.js</code> and associated WASM files are present and served, then reload.';
+          ov.appendChild(msg);
+          document.body.appendChild(ov);
+          // Block all pointer/keyboard interaction beneath overlay
+          document.body.style.pointerEvents = 'none';
+          ov.style.pointerEvents = 'auto';
+        }
+      } catch {}
     }
     // Elements annotated with data-pages-incompatible should be disabled on GitHub Pages.
     if (HOST_INFO.isGithubPages){

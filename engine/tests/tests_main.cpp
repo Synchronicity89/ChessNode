@@ -1,7 +1,12 @@
 #include "engine.h"
 #include <iostream>
+#include <cstring>
+#include <cstdlib>
 
 static int failures = 0;
+
+// Forward declarations for regression
+int depth2_knight_blunder_regression();
 
 void assert_eq(const char* name, int got, int expected) {
     if (got != expected) {
@@ -11,6 +16,8 @@ void assert_eq(const char* name, int got, int expected) {
 }
 
 int main() {
+    // Seed PRNG to make any tie-breakers in choose_best_move deterministic for tests
+    std::srand(1);
     assert_eq("engine_version", engine_version(), 1);
     // Empty board
     assert_eq("eval empty", evaluate_fen("8/8/8/8/8/8/8/8 w - - 0 1"), 0);
@@ -51,20 +58,20 @@ int main() {
     // Castle safety: with safety enabled, artificially attack path to block castling
     // Position: add a black rook attacking f1 and g1 squares to invalidate king-side castling
     const char* unsafeCastleFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQK1NR w KQkq - 0 1"; // remove white bishop from f1
-    // Inject a black rook on f3 (square f6 rank? We'll use piece layout minimal). Use a simple piece that attacks f1 in a straight line.
-    // Simpler: place a black rook on f2 (FEN: .../5r2/... ), but adjust board: We'll craft a custom FEN.
-    const char* attackFen = "rnbqkbnr/pppppppp/8/8/8/5r2/PPPPPPPP/RNBQK1NR w KQkq - 0 1"; // black rook at f3 attacks f1 path through f2
+    // Inject a black rook on f3 to attack f1 path; ensure f1 and g1 are empty so path is clear when safety is disabled
+    const char* attackFen = "rnbqkbnr/pppppppp/8/8/8/5r2/PPPPP1PP/RNBQK2R w KQkq - 0 1"; // f1,g1 empty; f2 cleared so rook on f3 attacks f1 path
     const char* jsonSafe = generate_descendants_opts(attackFen, 1, 0, "{\"includeCastling\":true,\"castleSafety\":true}");
     if (!jsonSafe){ std::cerr<<"FAIL: castleSafety generation failed"<<std::endl; failures++; }
     if (jsonSafe){
         std::string s(jsonSafe);
-        if (s.find("7 6 w") != std::string::npos){ std::cerr<<"FAIL: unsafe king-side castling not filtered"<<std::endl; failures++; }
+        // Detect presence of the FEN pattern after white K-side castling: last rank RNBQ1RK1, side to move black
+        if (s.find("/RNBQ1RK1 b ") != std::string::npos){ std::cerr<<"FAIL: unsafe king-side castling not filtered"<<std::endl; failures++; }
     }
     const char* jsonUnsafe = generate_descendants_opts(attackFen, 1, 0, "{\"includeCastling\":true,\"castleSafety\":false}");
     if (jsonUnsafe){
         std::string s(jsonUnsafe);
-        // Should allow castle when safety disabled (not guaranteed by rights alone; we approximate by presence of target square substring)
-        if (s.find("7 6 w") == std::string::npos){ std::cerr<<"FAIL: castling move missing when safety disabled"<<std::endl; failures++; }
+        // Should allow castle when safety disabled. Detect FEN with castled rank and side-to-move black.
+        if (s.find("/RNBQ1RK1 b ") == std::string::npos){ std::cerr<<"FAIL: castling move missing when safety disabled"<<std::endl; failures++; }
     }
 
     // Promotions subset: only 'q' allowed for a position with a promoting move
@@ -172,7 +179,73 @@ int main() {
         else { int val = std::atoi(s.c_str()+p+12); if (val < 90) { std::cerr << "FAIL: capture line finalEval too small: "<<val << std::endl; failures++; } }
     }
 
+    // Regression: ensure engine avoids trivial en prise at depth 2 (expected to FAIL currently)
+    failures += depth2_knight_blunder_regression();
+
     if (failures) return 1;
     std::cout << "OK" << std::endl;
     return 0;
 }
+
+// --- Additional targeted regression: depth-2 blunder into pawn capture ---
+// We place the engine in the exact game state reported:
+// 1. e2e4 b8c6 2. d2d4 (Black to move)
+// FEN from logs: r1bqkbnr/pppppppp/2n5/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2
+// With searchDepth=2, the engine should see that 1... c6e5? 2. d4e5 wins a knight.
+// This test asserts the engine should NOT pick c6e5 — and is expected to FAIL currently.
+
+extern "C" const char* choose_best_move(const char* fen, const char* optionsJson);
+extern "C" const char* list_legal_moves(const char* fen, const char* fromSqOrNull, const char* optionsJson);
+extern "C" const char* apply_move_if_legal(const char* fen, const char* uciMove, const char* optionsJson);
+
+static std::string parse_best_uci(const char* json){
+    if (!json) return std::string();
+    std::string s(json);
+    const std::string key = "\"best\":{\"uci\":\"";
+    auto p = s.find(key);
+    if (p == std::string::npos) return std::string();
+    size_t start = p + key.size();
+    size_t end = s.find('"', start);
+    if (end == std::string::npos) return std::string();
+    return s.substr(start, end - start);
+}
+
+static bool json_contains(const char* json, const char* needle){
+    if (!json || !needle) return false; std::string s(json); return s.find(needle) != std::string::npos;
+}
+
+int depth2_knight_blunder_regression(){
+    int localFailures = 0;
+    const char* fen_after_d2d4 = "r1bqkbnr/pppppppp/2n5/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2";
+    // Mirror UI defaults for geometric terms, which appear to influence the blunder case
+    const char* opts = "{\"searchDepth\":2,\"terms\":{\"material\":true,\"tempo\":false},\"centerPiecePlacementReward\":50,\"endGameKingCenterMagnet\":15}";
+
+    const char* bestJson = choose_best_move(fen_after_d2d4, opts);
+    if (!bestJson || std::strlen(bestJson) == 0 || json_contains(bestJson, "error")){
+        std::cerr << "FAIL: choose_best_move returned error/null for depth-2 scenario" << std::endl; localFailures++;
+    } else {
+        std::string uci = parse_best_uci(bestJson);
+        if (uci.empty()) { std::cerr << "FAIL: best.uci missing from choose_best_move output" << std::endl; localFailures++; }
+        // EXPECTATION (desired): engine should avoid c6e5 here at depth 2.
+        // We intentionally assert that it avoids c6e5, which is expected to FAIL with current behavior.
+        if (uci == "c6e5"){
+            std::cerr << "FAIL: depth-2 search chose knight into pawn capture (c6e5)" << std::endl; localFailures++;
+        }
+    }
+
+    // Sanity: verify that after c6e5, the reply d4e5 is legal and thus should be visible to depth-2 search
+    const char* after_knight = apply_move_if_legal(fen_after_d2d4, "c6e5", nullptr);
+    if (!after_knight || json_contains(after_knight, "error")){
+        std::cerr << "FAIL: applying c6e5 on the given FEN should be legal but was rejected" << std::endl; localFailures++;
+    } else {
+        const char* moves_after_knight = list_legal_moves(after_knight, nullptr, nullptr);
+        if (!moves_after_knight || !json_contains(moves_after_knight, "\"uci\":\"d4e5\"")){
+            std::cerr << "FAIL: expected white reply d4e5 to be legal after c6e5" << std::endl; localFailures++;
+        }
+    }
+
+    return localFailures;
+}
+
+// Run the regression when compiled as part of main test binary
+// Note: main aggregates failures, so no static initialization side-effects are needed here.

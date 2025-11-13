@@ -1,5 +1,17 @@
 // Placeholder board implementation: maintains simple move list only.
 (function(){
+  let engineReady = false;
+  try {
+    window.addEventListener('engine-bridge-ready', (e)=>{
+      engineReady = !!(e && e.detail && e.detail.wasmReady);
+      if (!engineReady){
+        try {
+          const box = $('#activityLog');
+          box.empty().append($('<div>').addClass('err').css('color','#b00020').text('Engine unavailable: WASM not loaded; GUI disabled.'));
+        } catch {}
+      }
+    }, { once:true });
+  } catch {}
   const moveListEl = $('#moveList');
   const boardHost = $('#board');
   let currentFen = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -8,7 +20,27 @@
   let legalCache = []; // cached legal moves for current position
   let cfg = (window.EngineConfig && window.EngineConfig.load()) || null;
   let evalCfg = (window.EngineEvalConfig && window.EngineEvalConfig.load()) || null;
-  const engineModeEl = () => $('#engineMode');
+
+  // Activity log helpers
+  function logActivity(message, level){
+    try {
+      const box = $('#activityLog');
+      const ts = new Date();
+      const hh = String(ts.getHours()).padStart(2,'0');
+      const mm = String(ts.getMinutes()).padStart(2,'0');
+      const ss = String(ts.getSeconds()).padStart(2,'0');
+      const ms = String(ts.getMilliseconds()).padStart(3,'0');
+      const cls = level||'info';
+      const line = $('<div>').addClass(cls);
+      line.append($('<span>').addClass('ts').text(`[${hh}:${mm}:${ss}.${ms}] `));
+      line.append(document.createTextNode(message));
+      box.append(line);
+      const children = box.children();
+      if (children.length > 200) children.slice(0, children.length - 200).remove();
+      box.scrollTop(box.prop('scrollHeight'));
+      if (cls==='err') console.error('[Activity]', message); else if (cls==='warn') console.warn('[Activity]', message); else console.log('[Activity]', message);
+    } catch {}
+  }
 
   function addMove(label) {
     const li = $('<li>').text(ply + '. ' + label);
@@ -17,7 +49,6 @@
   }
 
   function renderBoard() {
-    // Parse board portion for display only
     const boardPart = currentFen.split(' ')[0];
     const rows = boardPart.split('/');
     const table = $('<table>').css({borderCollapse:'collapse'});
@@ -45,9 +76,7 @@
     const map={P:'♙',N:'♘',B:'♗',R:'♖',Q:'♕',K:'♔',p:'♟',n:'♞',b:'♝',r:'♜',q:'♛',k:'♚'};
     td.text(map[piece]||'');
     const alg = rcToAlg(r,c);
-    // Highlight selection
     if (selectedSq===alg) td.css('outline','3px solid #2c7');
-    // Highlight legal destinations from selected square
     if (selectedSq){
       for (const m of legalCache){
         if (m.from===selectedSq && m.to===alg){ td.css('box-shadow','inset 0 0 0 3px #ffeb3b'); break; }
@@ -58,15 +87,18 @@
   }
 
   function refreshLegal(){
-    if (!window.EngineBridge){ legalCache=[]; return; }
+    if (!window.EngineBridge || !engineReady){ legalCache=[]; return; }
     try {
       const json = window.EngineBridge.listLegalMoves ? window.EngineBridge.listLegalMoves(currentFen,null,{castleSafety:true}) : null;
-      legalCache = json ? JSON.parse(json).moves : [];
+      const moves = json ? JSON.parse(json).moves : [];
+      const changed = (!legalCache) || (moves.length !== legalCache.length);
+      legalCache = moves;
+      if (changed) logActivity(`Legal moves: ${legalCache.length}`);
     } catch { legalCache=[]; }
   }
 
   function refreshEvalScore(){
-    if (!window.EngineBridge) { $('#score').text('engine-unavailable'); return; }
+    if (!window.EngineBridge || !engineReady) { $('#score').text('engine-unavailable'); return; }
     evalCfg = (window.EngineEvalConfig && window.EngineEvalConfig.load()) || evalCfg;
     const opts = evalCfg ? window.EngineEvalConfig.toEngineOptions(evalCfg) : null;
     let cp = null;
@@ -76,12 +108,19 @@
       cp = window.EngineBridge.evaluateFEN(currentFen);
     }
     if (cp===null || cp===undefined){ $('#score').text('engine-unavailable'); return; }
-    const pawns = (cp/100).toFixed(3);
+    const pawns = (cp/100).toFixed(5);
     $('#score').text((cp>=0?'+':'') + pawns);
+    logActivity(`Score updated to ${(cp>=0?'+':'') + (cp/100).toFixed(5)}`);
+  }
+
+  function refreshFenDisplay(){
+    const el = $('#fenDisplay');
+    if (!el.length) return;
+    el.val(currentFen);
+    logActivity(`FEN: ${currentFen}`);
   }
 
   function maybeAppendPromotion(uci, fromAlg, toAlg){
-    // If a pawn move reaches last rank and no promo char, append 'q'
     try {
       if (!fromAlg || !toAlg || !uci) return uci;
       const src = algToRC(fromAlg), dst = algToRC(toAlg);
@@ -100,7 +139,7 @@
     } catch { return uci; }
   }
 
-  // Helpers for line-based scoring
+  // Helpers
   function parseBoardArray(fen){
     const boardPart = (fen||'').split(' ')[0]||'';
     const rows = boardPart.split('/');
@@ -117,182 +156,37 @@
   function getPieceAt(boardGrid, alg){ const rc = algToRC(alg); return (!boardGrid||!rc)?'.':boardGrid[rc.r]?.[rc.c]||'.'; }
   function isUpper(ch){ return !!ch && ch>='A' && ch<='Z'; }
   function isLower(ch){ return !!ch && ch>='a' && ch<='z'; }
-  function manhattanToCenter(alg){
-    if (!alg) return 0; const rc = algToRC(alg); if (!rc) return 0;
-    const centers = ['d4','e4','d5','e5'].map(algToRC);
-    let best = 99; for (const c of centers){ if (!c) continue; const d = Math.abs(c.r - rc.r) + Math.abs(c.c - rc.c); if (d<best) best=d; }
-    return best===99?0:best;
-  }
-  function locateKing(boardGrid, side){
-    const target = side==='w' ? 'K' : 'k';
-    for (let r=0;r<8;r++) for (let c=0;c<8;c++){ if (boardGrid[r][c]===target){ return rcToAlg(r,c); } }
-    return null;
-  }
-  function countOpponentStrength(boardGrid, opponentSide){
-    // S = 3*(N+B) + 5*R + 9*Q for opponent
-    let n=0,b=0,r=0,q=0; const isOpp = opponentSide==='w'?isUpper:isLower;
-    for (let r0=0;r0<8;r0++) for (let c0=0;c0<8;c0++){
-      const ch = boardGrid[r0][c0]; if (!ch || ch==='.' ) continue;
-      if (isOpp(ch)){
-        const lc = ch.toLowerCase();
-        if (lc==='n') n++; else if (lc==='b') b++; else if (lc==='r') r++; else if (lc==='q') q++;
-      }
-    }
-    return 3*(n+b) + 5*r + 9*q;
-  }
-  function endgamishFactor(boardGrid, opponentSide, cfg){
-    const S = countOpponentStrength(boardGrid, opponentSide);
-    const T = (cfg?.endgamishness?.T) ?? 31; const L = (cfg?.endgamishness?.L) ?? 6;
-    let x = (T - S) / Math.max(1e-9, (T - L)); x = Math.max(0, Math.min(1, x));
-    if ((cfg?.endgamishness?.form||'linear') === 'logistic'){
-      const slope = cfg?.endgamishness?.slope ?? 5; const mid = cfg?.endgamishness?.midpoint ?? 1.0;
-      const dOver = (S===0?0:(S / Math.max(1e-9, T)));
-      const z = (dOver/(mid)) - 1; x = 1/(1+Math.exp(slope*z));
-    }
-    const min = cfg?.endgamishness?.min ?? 0; const max = cfg?.endgamishness?.max ?? 1;
-    x = Math.max(min, Math.min(max, x));
-    const pow = cfg?.endgamishnessPow ?? 1.0;
-    return Math.pow(x, pow);
-  }
-  function isCaptureMove(uci, boardGrid, stm){
-    if (!uci || uci.length<4) return false; const dst = uci.slice(2,4);
-    const piece = getPieceAt(boardGrid, dst);
-    if (piece && piece!=='.'){
-      // destination occupied by someone
-      return (stm==='w' && isLower(piece)) || (stm==='b' && isUpper(piece));
-    }
-    // crude en passant detection omitted
-    return false;
-  }
-  function plyEquivalentForMove(uci, boardGrid, tradeEq, stm){
-    return isCaptureMove(uci, boardGrid, stm) ? (tradeEq||0.5) : 1.0;
-  }
-  function riskAtDepth(dEq, D, riskCfg){
-    const type = (riskCfg?.type)||'exponential';
-    const x = Math.max(0, (dEq/Math.max(1e-9, D||0.0001)) - 1);
-    let r;
-    if (type==='logistic'){
-      const slope = riskCfg?.slope ?? 5; const m = riskCfg?.midpointMultiplier ?? 1.0;
-      r = 1/(1+Math.exp(slope*((dEq/(Math.max(1e-9, m*(D||0.0001)))) - 1)));
-    } else {
-      const k = Math.max(1.000001, riskCfg?.kAt2x ?? 100);
-      r = Math.exp(-Math.log(k)*x);
-    }
-    const p = riskCfg?.riskPow ?? 1.0; return Math.pow(r, p);
-  }
+  function manhattanToCenter(alg){ if (!alg) return 0; const rc = algToRC(alg); if (!rc) return 0; const centers = ['d4','e4','d5','e5'].map(algToRC); let best = 99; for (const c of centers){ if (!c) continue; const d = Math.abs(c.r - rc.r) + Math.abs(c.c - rc.c); if (d<best) best=d; } return best===99?0:best; }
+  function locateKing(boardGrid, side){ const target = side==='w' ? 'K' : 'k'; for (let r=0;r<8;r++) for (let c=0;c<8;c++){ if (boardGrid[r][c]===target){ return rcToAlg(r,c); } } return null; }
+  function countOpponentStrength(boardGrid, opponentSide){ let n=0,b=0,r=0,q=0; const isOpp = opponentSide==='w'?isUpper:isLower; for (let r0=0;r0<8;r0++) for (let c0=0;c0<8;c0++){ const ch = boardGrid[r0][c0]; if (!ch || ch==='.' ) continue; if (isOpp(ch)){ const lc = ch.toLowerCase(); if (lc==='n') n++; else if (lc==='b') b++; else if (lc==='r') r++; else if (lc==='q') q++; } } return 3*(n+b) + 5*r + 9*q; }
+  function endgamishFactor(boardGrid, opponentSide, cfg){ const T = (cfg?.endgamishness?.T) ?? 31; const L = (cfg?.endgamishness?.L) ?? 6; const S = countOpponentStrength(boardGrid, opponentSide); let x = (T - S) / Math.max(1e-9, (T - L)); x = Math.max(0, Math.min(1, x)); const min = cfg?.endgamishness?.min ?? 0; const max = cfg?.endgamishness?.max ?? 1; x = Math.max(min, Math.min(max, x)); const pow = cfg?.endgamishnessPow ?? 1.0; return Math.pow(x, pow); }
+  function isCaptureMove(uci, boardGrid, stm){ if (!uci || uci.length<4) return false; const dst = uci.slice(2,4); const piece = getPieceAt(boardGrid, dst); if (piece && piece!=='.'){ return (stm==='w' && isLower(piece)) || (stm==='b' && isUpper(piece)); } return false; }
+  function plyEquivalentForMove(uci, boardGrid, tradeEq, stm){ return isCaptureMove(uci, boardGrid, stm) ? (tradeEq||0.5) : 1.0; }
+  function riskAtDepth(dEq, D, riskCfg){ const type = (riskCfg?.type)||'exponential'; const x = Math.max(0, (dEq/Math.max(1e-9, D||0.0001)) - 1); let r; if (type==='logistic'){ const slope = riskCfg?.slope ?? 5; const m = riskCfg?.midpointMultiplier ?? 1.0; r = 1/(1+Math.exp(slope*((dEq/(Math.max(1e-9, m*(D||0.0001)))) - 1))); } else { const k = Math.max(1.000001, riskCfg?.kAt2x ?? 100); r = Math.exp(-Math.log(k)*x); } const p = riskCfg?.riskPow ?? 1.0; return Math.pow(r, p); }
 
-  function chooseEngineMove(mode){
-    if (!legalCache || !legalCache.length) return null;
-    if (mode === 'greedy1'){
-      // Evaluate each legal move with risk-aware and geometry terms; pick best for side to move.
-      const stm = (currentFen.split(' ')[1]||'w');
-      let cfg2 = (window.EngineEvalConfig && window.EngineEvalConfig.toLineEvalOptions && window.EngineEvalConfig.toLineEvalOptions()) || null;
-      evalCfg = (window.EngineEvalConfig && window.EngineEvalConfig.load()) || evalCfg;
-      const baseOpts = evalCfg ? window.EngineEvalConfig.toEngineOptions(evalCfg) : null;
-      // Current base eval for potentialGain baseline
-      const baseEval = (window.EngineBridge.evaluateFENOptions && baseOpts) ? window.EngineBridge.evaluateFENOptions(currentFen, baseOpts) : (window.EngineBridge.evaluateFEN? window.EngineBridge.evaluateFEN(currentFen):0);
-      const boardNow = parseBoardArray(currentFen);
-      let best = null; let bestScore = null;
-      for (const m of legalCache){
-        let uci = m.uci || (m.from+m.to);
-        uci = maybeAppendPromotion(uci, m.from, m.to);
-        const nextFen = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, uci, {castleSafety:true}) : null;
-        if (!nextFen || /^\{"error"/.test(nextFen)) continue;
-        const nextEval = (window.EngineBridge.evaluateFENOptions && baseOpts) ? window.EngineBridge.evaluateFENOptions(nextFen, baseOpts) : (window.EngineBridge.evaluateFEN? window.EngineBridge.evaluateFEN(nextFen):null);
-        if (nextEval===null || nextEval===undefined) continue;
-        const potentialGain = (nextEval - (baseEval||0));
-        // Opponent reply sampling
-        let potentialLoss = 0;
-        try {
-          const oppMovesJson = window.EngineBridge.listLegalMoves ? window.EngineBridge.listLegalMoves(nextFen, null, {castleSafety:true}) : null;
-          const oppMoves = oppMovesJson ? (JSON.parse(oppMovesJson).moves||[]) : [];
-          // Sample up to 12 opponent moves for speed
-          const sample = oppMoves.slice(0, 12);
-          let worstEval = nextEval;
-          for (const om of sample){
-            const n2 = window.EngineBridge.applyMoveIfLegal(nextFen, om.uci, {castleSafety:true});
-            if (!n2 || /^\{"error"/.test(n2)) continue;
-            const ev2 = (window.EngineBridge.evaluateFENOptions && baseOpts) ? window.EngineBridge.evaluateFENOptions(n2, baseOpts) : (window.EngineBridge.evaluateFEN? window.EngineBridge.evaluateFEN(n2):null);
-            if (ev2===null || ev2===undefined) continue;
-            if (stm==='w'){ if (ev2 < worstEval) worstEval = ev2; }
-            else { if (ev2 > worstEval) worstEval = ev2; }
-          }
-          if (stm==='w') potentialLoss = Math.max(0, nextEval - worstEval); else potentialLoss = Math.max(0, worstEval - nextEval);
-        } catch {}
-        // Ply-equivalent depth: our move + one reply
-        const p1 = plyEquivalentForMove(uci, boardNow, cfg2?.tradePlyDepthEquivalent, stm);
-        const dEq = p1 + 1.0;
-        const risk = riskAtDepth(dEq, cfg2?.opponentPlyDepth||4, cfg2?.plyDepthRisk);
-        const gainScale = cfg2?.plyDepthRisk?.gainScale ?? 1.0;
-        const lossScale = cfg2?.plyDepthRisk?.lossScale ?? 1.0;
-        const blendAlpha = cfg2?.plyDepthRisk?.blendAlpha ?? 1.0;
-        const lineRiskBonus = (gainScale*potentialGain*(1 - risk)) - ((1 - blendAlpha)*lossScale*potentialLoss*risk);
-        // Geometry rewards
-        const boardNext = parseBoardArray(nextFen);
-        const centers = ['d4','e4','d5','e5'];
-        const engineIsUpper = (stm==='w');
-        let startCount=0, endCount=0; for (const sq of centers){
-          const ch0 = getPieceAt(boardNow, sq), ch1 = getPieceAt(boardNext, sq);
-          if (engineIsUpper){ if (isUpper(ch0)) startCount++; if (isUpper(ch1)) endCount++; }
-          else { if (isLower(ch0)) startCount++; if (isLower(ch1)) endCount++; }
-        }
-        const netCenter = (endCount - startCount);
-        const centerReward = (cfg2?.centerPiecePlacementReward||0) * netCenter * (cfg2?.mix?.weightCenter ?? 1.0);
-        // King center reward with endgamishness
-        const engineKingStart = locateKing(boardNow, stm);
-        const engineKingEnd = locateKing(boardNext, stm);
-        const improv = Math.max(0, manhattanToCenter(engineKingStart) - manhattanToCenter(engineKingEnd));
-        const endg = endgamishFactor(boardNext, (stm==='w'?'b':'w'), cfg2);
-        const kPow = cfg2?.kingCenterImprovementPow ?? 1.0;
-        const kingCenterReward = (cfg2?.endGameKingCenterMagnet||0) * Math.pow(improv, kPow) * endg * (cfg2?.mix?.weightKingCenter ?? 1.0);
-        // Combine
-        const combined = nextEval + centerReward + kingCenterReward + (lineRiskBonus * (cfg2?.mix?.weightRisk ?? 1.0));
-        if (best===null){ best = m; bestScore = combined; continue; }
-        if ((stm==='w' && combined>bestScore) || (stm==='b' && combined<bestScore)){
-          best = m; bestScore = combined;
-        }
-      }
-      return best || null;
-    }
-    // Default/random
-    const idx = Math.floor(Math.random()*legalCache.length);
-    return legalCache[idx];
-  }
+  // Removed legacy Random/Greedy engine modes; engine moves now always use engine-side chooseBestMove.
 
   function onCellClick(alg, piece){
     if (!selectedSq){
-      // Select only if it has at least one legal move
       const hasMoves = legalCache.some(m=>m.from===alg);
       if (hasMoves){ selectedSq=alg; renderBoard(); }
       return;
     }
     if (selectedSq === alg){ selectedSq=null; renderBoard(); return; }
-    // Attempt move selectedSq -> alg if legal
     const move = legalCache.find(m=>m.from===selectedSq && m.to===alg);
     if (!move){ selectedSq=null; renderBoard(); return; }
     let uci = move.uci;
-    // Promotion handling: if move ends on rank 8 or 1 and is a pawn without promo, default to queen, unless ctrl pressed -> prompt
     const srcRC = algToRC(selectedSq), dstRC = algToRC(alg);
     if (srcRC && dstRC){
-      // heuristically detect a pawn move by presence of piece char in FEN at source (simplify by parsing board again)
       const rows = currentFen.split(' ')[0].split('/');
       let sr=srcRC.r, sc=srcRC.c, fenRow=rows[sr];
-      // Quick board reconstruction for source char
       let col=0, srcPiece='.';
-      for (const ch of fenRow){
-        if (/^[1-8]$/.test(ch)){ col+=parseInt(ch,10); } else { if (col===sc) srcPiece=ch; col++; }
-      }
+      for (const ch of fenRow){ if (/^[1-8]$/.test(ch)){ col+=parseInt(ch,10); } else { if (col===sc) srcPiece=ch; col++; } }
       if (srcPiece.toLowerCase()==='p' && (dstRC.r===0 || dstRC.r===7) && (!move.promo)){
-        if (window.event && window.event.ctrlKey){
-          const choice = prompt('Promote to (q,r,b,n)?','q');
-          const pc = (choice||'q').charAt(0).toLowerCase();
-          if (/^[qrbn]$/.test(pc)) uci += pc; else uci+='q';
-        } else {
-          uci += 'q';
-        }
+        if (window.event && window.event.ctrlKey){ const choice = prompt('Promote to (q,r,b,n)?','q'); const pc = (choice||'q').charAt(0).toLowerCase(); if (/^[qrbn]$/.test(pc)) uci += pc; else uci+='q'; }
+        else { uci += 'q'; }
       }
     }
-    // Apply via engine
     try {
       const nextFen = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, uci, {castleSafety:true}) : null;
       if (nextFen && !/^\{"error"/.test(nextFen)){
@@ -301,53 +195,210 @@
         selectedSq=null;
         refreshLegal();
         renderBoard();
-        refreshEvalScore();
+        refreshFenDisplay();
+        logActivity(`Human move: ${uci}`);
+        // Immediately trigger engine turn if applicable (no animation delay)
+        // Reset lastRequestedFen to allow immediate request on the new position
+        try { lastRequestedFen = null; } catch {}
+        try {
+          const side = $('#sideSelect').val();
+          const stm = currentFen.split(' ')[1];
+          const humanSide = side === 'white' ? 'w' : (side === 'black' ? 'b' : null);
+          const engineTurn = (side === 'observe') || (humanSide && stm !== humanSide);
+          if (engineTurn){
+            const lineCfg = window.EngineEvalConfig && window.EngineEvalConfig.toLineEvalOptions ? window.EngineEvalConfig.toLineEvalOptions() : {};
+            const depthVal = Number($('#depth').val()||1); lineCfg.searchDepth = depthVal;
+            logActivity(`Engine turn: requesting best move (Depth=${depthVal})…`);
+            const t0 = performance.now();
+            const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(currentFen, lineCfg) : null;
+            const obj = res ? JSON.parse(res) : null;
+            const t1 = performance.now();
+            if (obj && obj.best && obj.best.uci){
+              const u = obj.best.uci;
+              const nodesInfo = (typeof obj.nodesTotal === 'number') ? `, nodes=${obj.nodesTotal}` : (typeof obj.best.nodes === 'number') ? `, nodes=${obj.best.nodes}` : '';
+              const pliesInfo = (typeof obj.best.actualPlies === 'number') ? `, plies=${obj.best.actualPlies}` : '';
+              const depthInfo = (typeof obj.depth === 'number') ? `, depthUsed=${obj.depth}` : '';
+              logActivity(`Engine chose: ${u} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
+              try { if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); } } catch {}
+              try { if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); } } catch {}
+              const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, u, {castleSafety:true}) : null;
+              if (nextFen2 && !/^\{"error"/.test(nextFen2)){
+                currentFen = nextFen2; addMove(u); refreshLegal(); renderBoard(); refreshFenDisplay();
+                if (typeof obj.best.score === 'number'){ const pawns = (obj.best.score/100).toFixed(5); $('#score').text((obj.best.score>=0?'+':'') + pawns); }
+              } else { logActivity('Engine move application failed', 'err'); }
+            } else if (obj && obj.error){ logActivity(`Engine error: ${obj.error}`,'err'); }
+            else if (obj && obj.candidates && obj.candidates.length===0){ logActivity('Engine reports no candidate moves', 'warn'); }
+            else { logActivity('Engine returned no decision or parse failed', 'warn'); }
+          }
+        } catch(e){}
       } else {
-        // Illegal or error
         selectedSq=null; renderBoard();
+        logActivity(`Illegal move attempt or error applying move`, 'warn');
       }
     } catch {
       selectedSq=null; renderBoard();
+      logActivity(`Exception applying human move`, 'err');
     }
   }
 
   $('#newGame').on('click', () => {
     moveListEl.empty(); ply=1; currentFen='rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
     refreshLegal(); renderBoard(); addMove('Game start');
-    refreshEvalScore();
+    refreshEvalScore(); refreshFenDisplay();
+    logActivity('New game started');
+    // Kick engine immediately if engine should move first
+    try {
+      const side = $('#sideSelect').val();
+      const stm = currentFen.split(' ')[1];
+      const humanSide = side === 'white' ? 'w' : (side === 'black' ? 'b' : null);
+      const engineTurn = (side === 'observe') || (humanSide && stm !== humanSide);
+      if (engineTurn){
+        const lineCfg = window.EngineEvalConfig && window.EngineEvalConfig.toLineEvalOptions ? window.EngineEvalConfig.toLineEvalOptions() : {};
+        const depthVal = Number($('#depth').val()||1); lineCfg.searchDepth = depthVal;
+        logActivity(`Engine turn: requesting best move (Depth=${depthVal})…`);
+        const t0 = performance.now();
+        const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(currentFen, lineCfg) : null;
+        const obj = res ? JSON.parse(res) : null;
+        const t1 = performance.now();
+        if (obj && obj.best && obj.best.uci){
+          const u = obj.best.uci;
+          const nodesInfo = (typeof obj.nodesTotal === 'number') ? `, nodes=${obj.nodesTotal}` : (typeof obj.best.nodes === 'number') ? `, nodes=${obj.best.nodes}` : '';
+          const pliesInfo = (typeof obj.best.actualPlies === 'number') ? `, plies=${obj.best.actualPlies}` : '';
+          logActivity(`Engine chose: ${u} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}`, 'ok');
+          try { if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); } } catch {}
+          try { if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); } } catch {}
+          const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, u, {castleSafety:true}) : null;
+          if (nextFen2 && !/^\{"error"/.test(nextFen2)){
+            currentFen = nextFen2; addMove(u); refreshLegal(); renderBoard(); refreshFenDisplay();
+            if (typeof obj.best.score === 'number'){ const pawns = (obj.best.score/100).toFixed(5); $('#score').text((obj.best.score>=0?'+':'') + pawns); }
+          } else { logActivity('Engine move application failed', 'err'); }
+        } else if (obj && obj.error){ logActivity(`Engine error: ${obj.error}`,'err'); }
+        else if (obj && obj.candidates && obj.candidates.length===0){ logActivity('Engine reports no candidate moves', 'warn'); }
+        else { logActivity('Engine returned no decision or parse failed', 'warn'); }
+      }
+    } catch(e){}
   });
 
   $('#loadFen').on('click', () => {
     const fen = $('#ioText').val().trim();
     if (!fen) { alert('Paste a FEN into the textbox first.'); return; }
     currentFen = fen;
-    const score = EngineBridge.evaluateFEN(fen);
-    $('#score').text(score===null? 'engine-unavailable' : ((score>=0?'+':'')+Math.round(score/100)) );
     refreshLegal(); renderBoard(); addMove('Loaded FEN');
-    refreshEvalScore();
+    refreshEvalScore(); refreshFenDisplay();
+    logActivity('Loaded FEN from textbox');
+    // Immediate engine move if needed on loaded position
+    try {
+      const side = $('#sideSelect').val();
+      const stm = currentFen.split(' ')[1];
+      const humanSide = side === 'white' ? 'w' : (side === 'black' ? 'b' : null);
+      const engineTurn = (side === 'observe') || (humanSide && stm !== humanSide);
+      if (engineTurn){
+        const lineCfg = window.EngineEvalConfig && window.EngineEvalConfig.toLineEvalOptions ? window.EngineEvalConfig.toLineEvalOptions() : {};
+        const depthVal = Number($('#depth').val()||1); lineCfg.searchDepth = depthVal;
+        logActivity(`Engine turn: requesting best move (Depth=${depthVal})…`);
+        const t0 = performance.now();
+        const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(currentFen, lineCfg) : null;
+        const obj = res ? JSON.parse(res) : null;
+        const t1 = performance.now();
+        if (obj && obj.best && obj.best.uci){
+          const u = obj.best.uci;
+          const nodesInfo = (typeof obj.nodesTotal === 'number') ? `, nodes=${obj.nodesTotal}` : (typeof obj.best.nodes === 'number') ? `, nodes=${obj.best.nodes}` : '';
+          const pliesInfo = (typeof obj.best.actualPlies === 'number') ? `, plies=${obj.best.actualPlies}` : '';
+          const depthInfo = (typeof obj.depth === 'number') ? `, depthUsed=${obj.depth}` : '';
+          logActivity(`Engine chose: ${u} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
+          try { if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); } } catch {}
+          try { if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); } } catch {}
+          const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, u, {castleSafety:true}) : null;
+          if (nextFen2 && !/^\{"error"/.test(nextFen2)){
+            currentFen = nextFen2; addMove(u); refreshLegal(); renderBoard(); refreshFenDisplay();
+            if (typeof obj.best.score === 'number'){ const pawns = (obj.best.score/100).toFixed(5); $('#score').text((obj.best.score>=0?'+':'') + pawns); }
+          } else { logActivity('Engine move application failed', 'err'); }
+        } else if (obj && obj.error){ logActivity(`Engine error: ${obj.error}`,'err'); }
+        else if (obj && obj.candidates && obj.candidates.length===0){ logActivity('Engine reports no candidate moves', 'warn'); }
+        else { logActivity('Engine returned no decision or parse failed', 'warn'); }
+      }
+    } catch(e){}
   });
 
-  // Self-play observe mode placeholder (still random, not engine logic)
+  // Engine move timer (also drives observe mode); log only on state changes and once per FEN
+  let lastHaveMoves = null;
+  let lastEngineTurn = null;
+  let lastRequestedFen = null;
+  let engineUnavailableNotified = false;
   setInterval(() => {
     const side = $('#sideSelect').val();
-    if (side === 'observe' && legalCache.length){
-      const mv = chooseEngineMove(engineModeEl().val());
-      selectedSq = mv.from; onCellClick(mv.to,'');
+    const haveMoves = !!legalCache.length;
+    const stm = currentFen.split(' ')[1];
+    const humanSide = side === 'white' ? 'w' : (side === 'black' ? 'b' : null);
+    const engineTurn = (side === 'observe' && haveMoves) || (humanSide && haveMoves && stm !== humanSide);
+
+    if (lastHaveMoves !== haveMoves){
+      if (!haveMoves) logActivity('No legal moves available (game over or invalid position)', 'warn');
+      lastHaveMoves = haveMoves;
     }
-    // If human vs engine: pick random reply for the engine side (weak baseline)
-    if ((side === 'white' || side === 'black') && legalCache.length){
-      const stm = currentFen.split(' ')[1];
-      const humanSide = side === 'white' ? 'w' : 'b';
-      if (stm !== humanSide){
-        const mv = chooseEngineMove(engineModeEl().val());
-        selectedSq = mv.from; onCellClick(mv.to,'');
+    if (lastEngineTurn !== engineTurn){
+      lastEngineTurn = engineTurn;
+    }
+    if (!haveMoves) return;
+
+    if (!window.EngineBridge || !window.EngineBridge.chooseBestMove || !engineReady){
+      if (!engineUnavailableNotified){
+        logActivity('Engine unavailable or chooseBestMove not exported', 'err');
+        engineUnavailableNotified = true;
       }
+      return;
+    } else if (engineUnavailableNotified){
+      logActivity('Engine became available');
+      engineUnavailableNotified = false;
     }
-  }, 6000);
+
+    if (engineTurn){
+      if (lastRequestedFen === currentFen) return; // only once per FEN
+      lastRequestedFen = currentFen;
+      try {
+        const lineCfg = window.EngineEvalConfig && window.EngineEvalConfig.toLineEvalOptions ? window.EngineEvalConfig.toLineEvalOptions() : {};
+        const depthVal = Number($('#depth').val()||1); lineCfg.searchDepth = depthVal;
+        logActivity(`Engine turn: requesting best move (Depth=${depthVal})…`);
+        const t0 = performance.now();
+        const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(currentFen, lineCfg) : null;
+        const obj = res ? JSON.parse(res) : null;
+        const t1 = performance.now();
+        if (obj && obj.best && obj.best.uci){
+          const uci = obj.best.uci;
+          const nodesInfo = (typeof obj.nodesTotal === 'number') ? `, nodes=${obj.nodesTotal}` : (typeof obj.best.nodes === 'number') ? `, nodes=${obj.best.nodes}` : '';
+          const pliesInfo = (typeof obj.best.actualPlies === 'number') ? `, plies=${obj.best.actualPlies}` : '';
+          const depthInfo = (typeof obj.depth === 'number') ? `, depthUsed=${obj.depth}` : '';
+          logActivity(`Engine chose: ${uci} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
+          try { if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); } } catch {}
+          try { if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); } } catch {}
+          const move = legalCache.find(m=>m.uci===uci) || legalCache.find(m=> (m.from+m.to)===uci.slice(0,4));
+          if (move){ selectedSq = move.from; onCellClick(move.to,''); }
+          if (typeof obj.best.score === 'number'){
+            const pawns = (obj.best.score/100).toFixed(5);
+            $('#score').text((obj.best.score>=0?'+':'') + pawns);
+          }
+        } else if (obj && obj.error){
+          logActivity(`Engine error: ${obj.error}`,'err');
+        } else if (obj && obj.candidates && obj.candidates.length===0){
+          logActivity('Engine reports no candidate moves', 'warn');
+        } else {
+          logActivity('Engine returned no decision or parse failed', 'warn');
+        }
+      } catch (e){ logActivity(`Engine error: ${e&&e.message?e.message:'unknown'}`, 'err'); }
+    }
+  }, 2000);
 
   $(function(){
     if (cfg?.search?.maxDepth) $('#depth').val(String(cfg.search.maxDepth));
     refreshLegal(); renderBoard(); addMove('Game start');
-    refreshEvalScore();
+    refreshEvalScore(); refreshFenDisplay();
+    logActivity('UI ready');
   });
+
+  try {
+    window.addEventListener('engine-bridge-ready', (e)=>{
+      const ok = !!(e && e.detail && e.detail.wasmReady);
+      logActivity(`Engine bridge: ${ok?'ready':'unavailable'}` , ok?'ok':'warn');
+    }, { once:true });
+  } catch {}
 })();

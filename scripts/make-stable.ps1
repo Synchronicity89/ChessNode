@@ -27,6 +27,9 @@ function Invoke-NativeBuild {
   Push-Location $buildDir | Out-Null
   & cmake .. -DCMAKE_BUILD_TYPE=Release | Write-Host
   & cmake --build . --config Release --target chess_engine | Write-Host
+  # Build helper CLIs as well
+  & cmake --build . --config Release --target find_bad_moves | Write-Host
+  & cmake --build . --config Release --target score_children_dump | Write-Host
   if (Test-Path (Join-Path $buildDir 'chess_tests.exe')) { & ctest --output-on-failure -C Release | Write-Host }
   Pop-Location | Out-Null
   Write-Host "[make-stable] Native build complete. Artifacts in engine/build." 
@@ -52,7 +55,7 @@ function Invoke-WasmBuild {
     (Join-Path $engineDir 'src\eval.cpp'),
     (Join-Path $engineDir 'src\descendants.cpp'),
     ("-I" + (Join-Path $engineDir 'include')),
-    '-sEXPORTED_FUNCTIONS=["_evaluate_fen","_evaluate_fen_opts","_engine_version","_generate_descendants","_generate_descendants_opts","_list_legal_moves","_apply_move_if_legal","_evaluate_move_line"]',
+  '-sEXPORTED_FUNCTIONS=["_evaluate_fen","_evaluate_fen_opts","_engine_version","_generate_descendants","_generate_descendants_opts","_list_legal_moves","_apply_move_if_legal","_evaluate_move_line","_choose_best_move","_score_children"]',
     '-sEXPORTED_RUNTIME_METHODS=["cwrap"]',
     '-sMODULARIZE=1','-sEXPORT_NAME=EngineModule',
     '-o', (Join-Path $webWasmDir 'engine.js')

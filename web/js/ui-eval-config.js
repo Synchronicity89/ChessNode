@@ -35,6 +35,10 @@
       developmentOffset: 0,
       developmentCap: null,
       notJustEmptySquaresThreatReward: true,
+  // Castling / King movement
+  castleKingSideReward: 60,
+  castleQueenSideReward: 60,
+  kingNonCastleMovePenalty: 100,
       // King values
       kingEngineValue: 7000,
       kingOpponentValue: 5000,
@@ -95,6 +99,9 @@
     c.developmentGamma = Number(c.developmentGamma||d.developmentGamma);
     c.kingEngineValue = Number(c.kingEngineValue||d.kingEngineValue);
     c.kingOpponentValue = Number(c.kingOpponentValue||d.kingOpponentValue);
+    c.castleKingSideReward = Number(c.castleKingSideReward||d.castleKingSideReward);
+    c.castleQueenSideReward = Number(c.castleQueenSideReward||d.castleQueenSideReward);
+    c.kingNonCastleMovePenalty = Number(c.kingNonCastleMovePenalty||d.kingNonCastleMovePenalty);
     c.mix = Object.assign({}, d.mix, c.mix||{});
     return c;
   }
@@ -135,6 +142,10 @@
     // Geometry
     $('#center_reward').val(c.centerPiecePlacementReward);
     $('#king_center_mag').val(c.endGameKingCenterMagnet);
+  // Castling / King
+  $('#castle_k_reward').val(c.castleKingSideReward);
+  $('#castle_q_reward').val(c.castleQueenSideReward);
+  $('#king_noncastle_pen').val(c.kingNonCastleMovePenalty);
     // Development
     $('#rank_attack_factor').val(c.rankAttackFactor);
     $('#dev_incentive').val(c.developmentIncentive);
@@ -182,6 +193,9 @@
       tempo: Number($('#tempo_cp').val()||10),
       centerPiecePlacementReward: Number($('#center_reward').val()||50),
       endGameKingCenterMagnet: Number($('#king_center_mag').val()||15),
+  castleKingSideReward: Number($('#castle_k_reward').val()||60),
+  castleQueenSideReward: Number($('#castle_q_reward').val()||60),
+  kingNonCastleMovePenalty: Number($('#king_noncastle_pen').val()||100),
       rankAttackFactor: Number($('#rank_attack_factor').val()||1.1),
       developmentIncentive: Number($('#dev_incentive').val()||10),
       notJustEmptySquaresThreatReward: !!$('#threat_occupied').prop('checked'),
@@ -219,7 +233,15 @@
     return {
       weights: c.weights,
       terms: c.terms,
-      tempo: c.tempo
+      tempo: c.tempo,
+      centerPiecePlacementReward: c.centerPiecePlacementReward,
+      endGameKingCenterMagnet: c.endGameKingCenterMagnet,
+      developmentIncentive: c.developmentIncentive,
+      rankAttackFactor: c.rankAttackFactor,
+      notJustEmptySquaresThreatReward: c.notJustEmptySquaresThreatReward,
+      castleKingSideReward: c.castleKingSideReward,
+      castleQueenSideReward: c.castleQueenSideReward,
+      kingNonCastleMovePenalty: c.kingNonCastleMovePenalty
     };
   }
 

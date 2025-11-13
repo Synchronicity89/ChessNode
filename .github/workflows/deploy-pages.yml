@@ -33,7 +33,7 @@ jobs:
           em++ -std=c++17 -O3 \
             engine/src/example.cpp engine/src/fen.cpp \
             -Iengine/include \
-            -sEXPORTED_FUNCTIONS='["_evaluate_fen","_engine_version"]' \
+            -sEXPORTED_FUNCTIONS='["_evaluate_fen","_engine_version","_evaluate_fen_opts","_list_legal_moves","_apply_move_if_legal","_evaluate_move_line","_choose_best_move"]' \
             -sEXPORTED_RUNTIME_METHODS='["cwrap"]' \
             -sMODULARIZE=1 -sEXPORT_NAME=EngineModule \
             -o web/wasm/engine.js
