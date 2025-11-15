@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 3.16)
 project(ModularChessEngine LANGUAGES CXX)
 
 option(BUILD_WASM "Build WebAssembly target" OFF)
+option(CHESSNODE_INSTRUMENT "Enable extra movegen instrumentation (debug JSON/pins)" OFF)
+option(CHESSNODE_INSTRUMENT_THREADS "Enable threaded symmetry comparison instrumentation" OFF)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -9,10 +11,17 @@ add_library(chess_engine STATIC
     src/example.cpp
     src/descendants.cpp
     src/fen.cpp
-    src/eval.cpp
+    src/colorblind_engine.cpp
+    src/Eval_Symmetry.cpp
 )
 
 target_include_directories(chess_engine PUBLIC include)
+if (CHESSNODE_INSTRUMENT)
+    target_compile_definitions(chess_engine PRIVATE CHESSNODE_INSTRUMENT=1)
+endif()
+if (CHESSNODE_INSTRUMENT_THREADS)
+    target_compile_definitions(chess_engine PRIVATE CHESSNODE_INSTRUMENT_THREADS=1)
+endif()
 
 enable_testing()
 add_executable(chess_tests tests/tests_main.cpp)
@@ -61,6 +70,89 @@ target_link_libraries(find_bad_moves PRIVATE chess_engine)
 # CLI to dump engine score_children with PV/extension info and recurse
 add_executable(score_children_dump tests/score_children_dump_cli.cpp)
 target_link_libraries(score_children_dump PRIVATE chess_engine)
+
+# CLI to flip a FEN (color + 180° rotation) for symmetry checking
+add_executable(fen_flip_cli tests/fen_flip_cli.cpp)
+target_link_libraries(fen_flip_cli PRIVATE chess_engine)
+
+# Symmetry invariance test (evaluation consistency under flip)
+add_executable(symmetry_tests tests/test_symmetry.cpp)
+target_link_libraries(symmetry_tests PRIVATE chess_engine)
+add_test(NAME symmetry_tests COMMAND symmetry_tests)
+
+# Bulk symmetry and consistency tests across 60 positions
+add_executable(symmetry_positions tests/symmetry_positions_test.cpp)
+target_link_libraries(symmetry_positions PRIVATE chess_engine)
+add_test(NAME symmetry_positions COMMAND symmetry_positions)
+if (CHESSNODE_INSTRUMENT_THREADS)
+    target_compile_definitions(symmetry_positions PRIVATE CHESSNODE_INSTRUMENT_THREADS=1)
+endif()
+# Provide absolute logs directory to tests
+get_filename_component(REPO_ROOT "${CMAKE_SOURCE_DIR}/.." ABSOLUTE)
+set(LOGS_DIR_PATH "${REPO_ROOT}/logs")
+target_compile_definitions(symmetry_positions PRIVATE LOGS_DIR="${LOGS_DIR_PATH}")
+
+# Debug helper to inspect move list asymmetries for selected indices
+add_executable(symmetry_debug tests/symmetry_debug.cpp)
+target_link_libraries(symmetry_debug PRIVATE chess_engine)
+
+# Threaded symmetry probe (instrumentation build only)
+add_executable(symmetry_thread_probe tests/symmetry_thread_probe.cpp)
+target_link_libraries(symmetry_thread_probe PRIVATE chess_engine)
+if (CHESSNODE_INSTRUMENT_THREADS)
+    target_compile_definitions(symmetry_thread_probe PRIVATE CHESSNODE_INSTRUMENT_THREADS=1)
+endif()
+
+# Dedicated symmetry trace driver (direct eval of failing FEN pairs)
+add_executable(symm_trace_driver tests/symm_trace_driver.cpp)
+target_link_libraries(symm_trace_driver PRIVATE chess_engine)
+
+# Move dump driver for detailed symmetry move set comparison
+add_executable(symm_move_dump_driver tests/symm_move_dump_driver.cpp)
+target_link_libraries(symm_move_dump_driver PRIVATE chess_engine)
+
+# Trade neutrality test (captures -> recaptures even material)
+add_executable(trade_neutrality tests/trade_neutrality_cli.cpp)
+target_link_libraries(trade_neutrality PRIVATE chess_engine)
+add_test(NAME trade_neutrality COMMAND trade_neutrality)
+
+# Depth-6 drawish evaluation symmetry test
+add_executable(depth6_eval tests/depth6_eval_cli.cpp)
+target_link_libraries(depth6_eval PRIVATE chess_engine)
+add_test(NAME depth6_eval COMMAND depth6_eval)
+
+# Even-depth draw evaluation (2,4,6,8) for provided FEN and its flip
+add_executable(even_depth_eval tests/even_depth_eval_cli.cpp)
+target_link_libraries(even_depth_eval PRIVATE chess_engine)
+add_test(NAME even_depth_eval COMMAND even_depth_eval)
+
+# Parent zero-eval test at depth 6
+add_executable(parent_zero_eval tests/parent_zero_eval_cli.cpp)
+target_link_libraries(parent_zero_eval PRIVATE chess_engine)
+add_test(NAME parent_zero_eval COMMAND parent_zero_eval)
+
+# Engine-vs-engine promotion race test from provided FEN at depth 10
+add_executable(black_promotes_first tests/black_promotes_first_cli.cpp)
+target_link_libraries(black_promotes_first PRIVATE chess_engine)
+add_test(NAME black_promotes_first COMMAND black_promotes_first)
+
+# Depth-19 decision test on promotion danger FEN (avoid known blunder f1g1)
+add_executable(depth19_detect_promotion tests/depth19_detect_promotion_cli.cpp)
+target_link_libraries(depth19_detect_promotion PRIVATE chess_engine)
+add_test(NAME depth19_detect_promotion COMMAND depth19_detect_promotion)
+
+# Depth-4 diagnostic for knight capture vs bishop move
+add_executable(why_no_knight_take tests/why_no_knight_take_cli.cpp)
+target_link_libraries(why_no_knight_take PRIVATE chess_engine)
+add_test(NAME why_no_knight_take COMMAND why_no_knight_take)
+
+# CLI: choose_best_move (FEN depth -> JSON)
+add_executable(choose_best_move_cli tests/choose_best_move_cli.cpp)
+target_link_libraries(choose_best_move_cli PRIVATE chess_engine)
+
+# CLI: apply_move_if_legal (FEN move -> new FEN or error JSON)
+add_executable(apply_move_cli tests/apply_move_cli.cpp)
+target_link_libraries(apply_move_cli PRIVATE chess_engine)
 
 # --- GoogleTest integration for richer VS Code Test UI ---
 option(ENABLE_GTEST "Enable GoogleTest-based tests" OFF)

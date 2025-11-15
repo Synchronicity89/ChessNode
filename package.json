@@ -1,0 +1,12 @@
+{
+  "name": "chessnode",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "test:stockfish-race": "node scripts/stockfish_promotion_race_test.js"
+  },
+  "dependencies": {
+    "stockfish": "^16.0.0"
+  }
+}

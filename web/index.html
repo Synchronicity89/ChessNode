@@ -21,7 +21,8 @@
     <section class="board-panel">
       <div id="board" class="board-placeholder">Board will render here</div>
       <div class="controls">
-  <button id="newGame" class="primary">New Game</button>
+        <button id="newGame" class="primary" title="Stops any running search and starts a new game search">New Game</button>
+        <button id="endGame" title="Stops searching without starting a new search">End Game</button>
         <label>
           Side:
           <select id="sideSelect">
@@ -40,6 +41,15 @@
         <label>
           Hide Board (Fast) <input id="hideBoard" type="checkbox">
         </label>
+        <div class="row" style="margin-top:8px; gap:6px; display:flex; flex-wrap:wrap; align-items:center;">
+          <label style="flex:1 1 320px;">
+            FEN:
+            <input id="fenInputBoard" type="text" placeholder="Paste FEN here" style="width:100%; font-family:monospace;">
+          </label>
+          <button id="btnLoadFenBoard" title="Load FEN to board and make it engine's turn">Load FEN → Move</button>
+          <button id="btnFlipFenBoard" title="Flip FEN (rotate 180° + swap colors) into the textbox">Flip FEN</button>
+          <button id="btnSelfPlay" title="Engine self-play loop with dev 5-move draw rule">Self-Play</button>
+        </div>
       </div>
     </section>
     <section class="sidebar" data-requires-wasm>
@@ -47,7 +57,7 @@
       <ol id="moveList"></ol>
       <h2>Score</h2>
       <div id="score">--</div>
-  <div id="engineStatusRow">Engine: <span id="engineStatus">detecting…</span></div>
+  <div id="engineStatusRow">Engine: <span id="engineStatus">detecting…</span> | Search: <span id="searchState" class="search-dot search-paused">paused</span></div>
     <h2>Activity</h2>
     <div id="activityLog" aria-live="polite"></div>
     <h2>Position (FEN)</h2>

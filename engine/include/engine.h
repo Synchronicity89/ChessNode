@@ -18,6 +18,8 @@ int evaluate_fen(const char* fen);
 //   "tempo": 10  // centipawns added for side-to-move when terms.tempo=true
 // }
 int evaluate_fen_opts(const char* fen, const char* optionsJson);
+// Symmetry-safe colorblind evaluation (white-centric) computing per-side features and subtracting.
+int evaluate_fen_colorblind(const char* fen, const char* optionsJson);
 // Generate a JSON string describing descendants up to depth (pseudo moves) with optional N+1 filter.
 // Backward-compatible basic entry point.
 const char* generate_descendants(const char* fen, int depth, int enableNPlus1);
@@ -42,6 +44,12 @@ const char* apply_move_if_legal(const char* fen, const char* uciMove, const char
 // movesJson: JSON array of strings, e.g., ["e2e4","e7e5","g1f3"].
 // Returns JSON: {"start":"FEN","nodes":[{"ply":1,"uci":"e2e4","fen":"...","eval":12},...],"finalFen":"...","finalEval":34}
 const char* evaluate_move_line(const char* fen, const char* movesJson, const char* optionsJson);
+
+#ifdef CHESSNODE_INSTRUMENT_THREADS
+// Threaded symmetry debug (instrumentation build only).
+// Returns rich JSON diff of pseudo/legal movegen between original and flipped FEN.
+const char* debug_compare_symmetry(const char* fen, const char* optionsJson);
+#endif
 
 #ifdef __cplusplus
 }

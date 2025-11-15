@@ -102,27 +102,43 @@
   // UI wiring ---------------------------------------------------------------
   function listParents(tree){
     parentList.empty();
+    if (!tree || !Array.isArray(tree.nodes)){
+      const fallbackRoot = $('#rootFen').val().trim();
+      const li=$('<li>').text('[root] ' + fallbackRoot.substring(0,80)).css('cursor','pointer');
+      li.on('click', ()=>{ selectParent({nodes:[], root:fallbackRoot}, fallbackRoot); });
+      parentList.append(li);
+      return;
+    }
+    if (!tree.root){ tree.root = $('#rootFen').val().trim(); }
     const seen = new Set();
     const includeRoot = !!cfg.includeRootInList;
-    // Optionally place root first
-    if (includeRoot) {
+    if (includeRoot){
       seen.add(tree.root);
       const li=$('<li>').text('[root] ' + tree.root.substring(0,80)).css('cursor','pointer');
       li.on('click', ()=>{ selectParent(tree, tree.root); });
       parentList.append(li);
     }
+    let any=false;
     for (const n of tree.nodes){
-      if (n.d===0) continue;
-      if (!includeRoot && n.parent === tree.root) continue; // omit root unless requested
+      if (!n || n.parent===undefined) continue;
+      if (!includeRoot && n.parent === tree.root) continue;
       if (!seen.has(n.parent)){
         seen.add(n.parent);
-        const label = (n.parent === tree.root ? '[root] ' : '') + n.parent.substring(0,80);
+        const label = (n.parent === tree.root ? '[root] ' : '') + String(n.parent).substring(0,80);
         const li=$('<li>').text(label).css('cursor','pointer');
         li.on('click', ()=>{ selectParent(tree, n.parent); });
-        parentList.append(li);
+        parentList.append(li); any=true;
       }
     }
-    if (!seen.size) parentList.append($('<li>').text('No parents (depth too small?)'));
+    if (!any){
+      if (!includeRoot){
+        // Provide root fallback entry
+        const li=$('<li>').text('[root] ' + tree.root.substring(0,80)).css('cursor','pointer');
+        li.on('click', ()=>{ selectParent(tree, tree.root); });
+        parentList.append(li);
+      }
+      parentList.append($('<li>').text('No parents (generator stub)'));
+    }
   }
   function selectParent(tree, fen){
     childList.empty();
@@ -188,16 +204,13 @@
   $('#runExplore').on('click', ()=>{
     try{
       const fen = $('#rootFen').val().trim();
-      const depth = Math.max(1, Math.min(8, Number($('#plyDepth').val()||1)));
+      const depth = Number($('#plyDepth').val()||1);
       let enableN1 = $('#enableNplus1').is(':checked');
       statusEl.text('Running...');
       setTimeout(()=>{
         // Require WASM engine; no JS fallback
         const options = readOptions();
-        if (depth > 2 && enableN1) {
-          enableN1 = false; // disable N+1 legality at deeper plies for performance
-          statusEl.text('N+1 disabled for depth > 2 to keep it responsive...');
-        }
+        // No GUI guardrails: do not auto-disable features based on depth
         if (window.EngineBridge && window.EngineBridge.generateDescendants) {
           const t0 = performance.now();
           const json = window.EngineBridge.generateDescendants(fen, depth, !!enableN1, options);
@@ -414,9 +427,20 @@
       scoresPanel.css('color','#b00020').text('Engine unavailable: WASM not loaded; GUI disabled.');
       return;
     }
+    if (!(window.EngineBridge && typeof window.EngineBridge.supportsScoreChildren==='function' && window.EngineBridge.supportsScoreChildren())){
+      scoresPanel.css('color','#b00020').text('Engine build lacks score_children export. Rebuild with that symbol exported or use chooseBestMove per child.');
+      return;
+    }
     const json = window.EngineBridge.scoreChildren(parentFen, engineOpts);
     if (!json){ scoresPanel.text('No data from engine.'); return; }
-    const obj = JSON.parse(json);
+    let obj=null; try { obj = JSON.parse(json); } catch(e1){
+      // Attempt a lenient fix for trailing commas: remove any ,] and ,}
+      let fixed = json.replace(/,\s*([\]\}])/g, '$1');
+      try { obj = JSON.parse(fixed); }
+      catch(e2){
+        scoresPanel.html(`<div style="color:#b00020">JSON parse error: ${e1.message}</div><pre>${json.replace(/</g,'&lt;')}</pre>`); return;
+      }
+    }
     const results = [];
     const parentNodes = (typeof obj.nodes === 'number') ? obj.nodes : null;
     for (const ch of (obj.children||[])){
@@ -440,7 +464,7 @@
   }
 
   $('#scoreLines').on('click', ()=>{
-    const depth = Math.max(1, Math.min(8, Number($('#plyDepth').val()||1)));
+    const depth = Number($('#plyDepth').val()||1);
     const fen = selectedParentFen || ($('#rootFen').val().trim());
     scoreLinesForParent(fen, depth);
   });

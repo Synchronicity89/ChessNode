@@ -2,6 +2,10 @@
 #include <iostream>
 #include <cstring>
 #include <cstdlib>
+#include <vector>
+#include <string>
+#include <sstream>
+#include <cctype>
 
 static int failures = 0;
 
@@ -166,6 +170,27 @@ int main() {
     int e_tempo_w = evaluate_fen_opts("4k3/8/8/8/8/8/8/4K3 w - - 0 1", "{\"terms\":{\"tempo\":true},\"tempo\":10}");
     int e_tempo_b = evaluate_fen_opts("4k3/8/8/8/8/8/8/4K3 b - - 0 1", "{\"terms\":{\"tempo\":true},\"tempo\":10}");
     if (!(e_tempo_w - e_tempo_b == 20)) { std::cerr << "FAIL: tempo term not applied symmetrically" << std::endl; failures++; }
+
+    // --- Symmetry invariance tests: flip FEN (rotate 180 + swap colors). Evaluation should remain numerically equal. ---
+    auto rotateAndSwap = [](const std::string &placement){
+        std::vector<char> squares(64,'.'); std::vector<std::string> ranks; std::string tmp; for(char ch: placement){ if(ch=='/'){ ranks.push_back(tmp); tmp.clear(); } else tmp.push_back(ch); } ranks.push_back(tmp);
+        if(ranks.size()!=8) return std::string();
+        for(int r=0;r<8;r++){ int f=0; for(char ch: ranks[r]){ if(std::isdigit((unsigned char)ch)){ int n=ch-'0'; for(int k=0;k<n;k++){ squares[r*8+f]='.'; f++; } } else { squares[r*8+f]=ch; f++; } } if(f!=8) return std::string(); }
+        std::vector<char> out(64,'.'); for(int i=0;i<64;i++){ char p=squares[i]; int j=63-i; if(p!='.') p = std::isupper((unsigned char)p)? std::tolower((unsigned char)p): std::toupper((unsigned char)p); out[j]=p; }
+        std::string res; for(int r=0;r<8;r++){ int empty=0; for(int c=0;c<8;c++){ char p=out[r*8+c]; if(p=='.'){ empty++; } else { if(empty){ res+=char('0'+empty); empty=0; } res+=p; } } if(empty) res+=char('0'+empty); if(r!=7) res+='/'; }
+        return res;
+    };
+    auto flipSide = [](char s){ return s=='w'?'b':'w'; };
+    auto flipCast = [](const std::string &c){ if(c=="-") return c; bool wK=false,wQ=false,bK=false,bQ=false; for(char ch: c){ if(ch=='K') bK=true; else if(ch=='Q') bQ=true; else if(ch=='k') wK=true; else if(ch=='q') wQ=true; } std::string out; if(wK) out+='K'; if(wQ) out+='Q'; if(bK) out+='k'; if(bQ) out+='q'; if(out.empty()) out="-"; return out; };
+    auto flipEP = [](const std::string &ep){ if(ep.size()!=2) return std::string("-"); char f=ep[0], r=ep[1]; if(f<'a'||f>'h'||r<'1'||r>'8') return std::string("-"); int fi=f-'a', ri=r-'1'; int nfi=7-fi, nri=7-ri; return std::string()+char('a'+nfi)+char('1'+nri); };
+    auto flipFen = [&](const std::string &fen){ std::istringstream ss(fen); std::string p,s,c,e,h,fn; if(!(ss>>p>>s>>c>>e>>h>>fn)) return std::string(); std::string np=rotateAndSwap(p); if(np.empty()) return std::string(); std::ostringstream out; out<<np<<" "<<flipSide(s[0])<<" "<<flipCast(c)<<" "<<flipEP(e)<<" "<<h<<" "<<fn; return out.str(); };
+    struct SymCase{ const char* fen; };
+    std::vector<SymCase> symCases = {
+        {"rnbq1rk1/pppp1ppp/5n2/4p3/2B1P3/2N2N2/PPPP1PPP/R1BQ1RK1 w - - 8 8"},
+        {"rnbqkbnr/pppppppp/8/4P3/3P4/8/PPP1PPPP/RNBQKBNR b KQkq e3 0 3"},
+        {"r1bqkbnr/pppp1ppp/2n5/4P3/3P4/8/PPP2PPP/RNBQKBNR b KQkq d3 0 5"}
+    };
+    for(auto &sc: symCases){ std::string flipped = flipFen(sc.fen); if(flipped.empty()){ std::cerr << "FAIL: flipFen failed for "<< sc.fen << std::endl; failures++; continue; } int evalA = evaluate_fen_opts(sc.fen, "{}"); int evalB = evaluate_fen_opts(flipped.c_str(), "{}"); if(evalA != evalB){ std::cerr << "FAIL: symmetry mismatch evalA="<<evalA<<" evalB="<<evalB<<" FEN="<<sc.fen<<" FLIP="<<flipped<< std::endl; failures++; } }
 
     // Line evaluation: simple capture sequence should end up +100 for white (material-only)
     const char* capStart = "4k3/8/8/8/3p4/8/4P3/4K3 w - - 0 1"; // black pawn d4, white pawn e2 -> e2e4 d4e3 e2xe3 illegal; instead: e2e3 d4e3?? can't. Use e2xd3 from other setup

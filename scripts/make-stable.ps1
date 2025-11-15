@@ -47,17 +47,21 @@ function Invoke-WasmBuild {
     return
   }
 
-  Write-Host "[make-stable] Building WASM via em++..."
+  Write-Host "[make-stable] Building WASM (baseline, memory growth) via em++..."
+  # Baseline build (single-threaded, memory growth enabled)
   $argsList = @(
     '-std=c++17','-O3',
     (Join-Path $engineDir 'src\example.cpp'),
     (Join-Path $engineDir 'src\fen.cpp'),
-    (Join-Path $engineDir 'src\eval.cpp'),
+    (Join-Path $engineDir 'src\Eval_Symmetry.cpp'),
     (Join-Path $engineDir 'src\descendants.cpp'),
     ("-I" + (Join-Path $engineDir 'include')),
-  '-sEXPORTED_FUNCTIONS=["_evaluate_fen","_evaluate_fen_opts","_engine_version","_generate_descendants","_generate_descendants_opts","_list_legal_moves","_apply_move_if_legal","_evaluate_move_line","_choose_best_move","_score_children"]',
+    '-sEXPORTED_FUNCTIONS=["_evaluate_fen","_evaluate_fen_opts","_engine_version","_generate_descendants","_generate_descendants_opts","_list_legal_moves","_apply_move_if_legal","_evaluate_move_line","_choose_best_move","_score_children","_start_search","_cancel_search","_get_search_status","_set_engine_random_seed"]',
     '-sEXPORTED_RUNTIME_METHODS=["cwrap"]',
     '-sMODULARIZE=1','-sEXPORT_NAME=EngineModule',
+    '-sALLOW_MEMORY_GROWTH=1',
+    '-sINITIAL_MEMORY=268435456',  # 256 MiB initial
+    '-sMAXIMUM_MEMORY=4294967296', # 4 GiB max (wasm32 practical upper bound)
     '-o', (Join-Path $webWasmDir 'engine.js')
   )
 
@@ -88,7 +92,35 @@ function Invoke-WasmBuild {
     $msg = "em++ completed but engine.wasm not found; verify your Emscripten installation and outputs."
     if ($Strict) { throw $msg } else { Write-Warning $msg }
   }
-  Write-Host "[make-stable] WASM build complete."
+  Write-Host "[make-stable] Baseline WASM build complete."
+
+  # Pthreads build variant (if possible). This produces engine_pthreads.js/wasm.
+  Write-Host "[make-stable] Building WASM (pthreads) variant via em++..."
+  $argsThreads = @(
+    '-std=c++17','-O3','-pthread',
+    (Join-Path $engineDir 'src\example.cpp'),
+    (Join-Path $engineDir 'src\fen.cpp'),
+    (Join-Path $engineDir 'src\Eval_Symmetry.cpp'),
+    (Join-Path $engineDir 'src\descendants.cpp'),
+    ("-I" + (Join-Path $engineDir 'include')),
+    '-sUSE_PTHREADS=1',
+    '-sPTHREAD_POOL_SIZE=4',
+    '-sEXPORTED_FUNCTIONS=["_evaluate_fen","_evaluate_fen_opts","_engine_version","_generate_descendants","_generate_descendants_opts","_list_legal_moves","_apply_move_if_legal","_evaluate_move_line","_choose_best_move","_score_children","_start_search","_cancel_search","_get_search_status","_set_engine_random_seed"]',
+    '-sEXPORTED_RUNTIME_METHODS=["cwrap"]',
+    '-sMODULARIZE=1','-sEXPORT_NAME=EngineModulePthreads',
+    '-sALLOW_MEMORY_GROWTH=1',
+    '-sINITIAL_MEMORY=268435456',
+    '-sMAXIMUM_MEMORY=4294967296',
+    '-o', (Join-Path $webWasmDir 'engine_pthreads.js')
+  )
+  & $empp.Path @argsThreads
+  $exitThreads = $LASTEXITCODE
+  if ($exitThreads -ne 0) { Write-Warning "Pthreads build failed (exit $exitThreads). Baseline build remains available." }
+  elseif (-not (Test-Path (Join-Path $webWasmDir 'engine_pthreads.wasm'))) {
+    Write-Warning "Pthreads build completed but engine_pthreads.wasm missing; verify environment (cross-origin isolation may be needed)."
+  } else {
+    Write-Host "[make-stable] Pthreads WASM build complete."
+  }
 }
 
 Write-Host "Creating stable snapshot..."

@@ -4,6 +4,12 @@ const EngineBridge = (() => {
   let wasmAvailable = false;
   let wasmReady = false;
   let Module = null; // Emscripten module when loaded
+  // Cached function pointers and capability flags
+  let fn_start_search = null, fn_cancel_search = null, fn_get_search_status = null;
+  let fn_score_children = null;
+  let fn_set_seed = null;
+  let hasAsync = false;
+  let hasScoreChildren = false;
 
   async function detectWasm() {
     // Avoid HEAD probes that spam console/network. We'll try to load engine.js directly below.
@@ -23,33 +29,42 @@ const EngineBridge = (() => {
   async function init() {
     const mode = await detectWasm();
     if (mode === 'emscripten-js') {
-      try {
-        // Cache-bust engine.js to ensure latest build is loaded in the browser
-        const bust = Date.now();
+      const bust = Date.now();
+      const canUseThreads = !!(self && self.crossOriginIsolated);
+      // If not cross-origin isolated, skip pthreads candidates to avoid load failures
+      const candidates = canUseThreads ? [
+        'wasm/engine_pthreads.js?v='+bust,
+        'wasm/engine_pthreads.js',
+        'wasm/engine.js?v='+bust,
+        'wasm/engine.js'
+      ] : [
+        'wasm/engine.js?v='+bust,
+        'wasm/engine.js'
+      ];
+      for (const url of candidates){
         try {
-          await loadScript('wasm/engine.js?v=' + bust);
-        } catch (e) {
-          // Fallback without cache buster
-          await loadScript('wasm/engine.js');
-        }
-        if (typeof window.EngineModule === 'function') {
-          Module = await window.EngineModule();
-          wasmReady = true;
-          //console.log('[EngineBridge] Emscripten module loaded.');
-        } else if (typeof window.Module !== 'undefined' && window.Module.ready) {
-          Module = await window.Module.ready; // best-effort fallback
-          wasmReady = true;
-          //console.log('[EngineBridge] Emscripten Module (global) loaded.');
-        } else {
-          // Leave wasmReady=false; engine not available.
-        }
-      } catch (e) {
-        // Silently ignore; engine not available.
+          await loadScript(url);
+          if (typeof window.EngineModulePthreads === 'function') {
+            Module = await window.EngineModulePthreads(); wasmReady=true; break;
+          } else if (typeof window.EngineModule === 'function') {
+            Module = await window.EngineModule(); wasmReady=true; break;
+          } else if (typeof window.Module !== 'undefined' && window.Module.ready){
+            Module = await window.Module.ready; wasmReady=true; break;
+          }
+        } catch(e){ /* try next */ }
       }
-    } else {
-      // No engine module found.
     }
     wasmAvailable = !!Module;
+    // Probe exported functions once and cache pointers for capability detection
+    if (wasmReady && Module && Module.cwrap){
+      try { fn_start_search = Module.cwrap('start_search','string',['string','string']); } catch(e) { fn_start_search = null; }
+      try { fn_cancel_search = Module.cwrap('cancel_search','void',[]); } catch(e) { fn_cancel_search = null; }
+      try { fn_get_search_status = Module.cwrap('get_search_status','string',[]); } catch(e) { fn_get_search_status = null; }
+      try { fn_score_children = Module.cwrap('score_children','string',['string','string']); } catch(e) { fn_score_children = null; }
+      try { fn_set_seed = Module.cwrap('set_engine_random_seed','void',['number']); } catch(e) { fn_set_seed = null; }
+      hasAsync = !!(fn_start_search && fn_get_search_status);
+      hasScoreChildren = !!fn_score_children;
+    }
     try {
       window.dispatchEvent(new CustomEvent('engine-bridge-ready', { detail: { wasmReady, wasmAvailable, mode, Module } }));
     } catch {}
@@ -149,17 +164,37 @@ const EngineBridge = (() => {
   }
 
   function scoreChildren(fen, options){
-    if (wasmReady && Module && Module.cwrap){
-      try {
-        const fn = Module.cwrap('score_children','string',['string','string']);
-        const opt = options ? JSON.stringify(options) : null;
-        return fn(fen||'', opt);
-      } catch(e){}
+    if (wasmReady && fn_score_children){
+      try { const opt = options ? JSON.stringify(options) : null; return fn_score_children(fen||'', opt); } catch(e){}
     }
     return null;
   }
 
-  return { init, getVersion, evaluateFEN, evaluateFENOptions, evaluateMoveLine, generateDescendants, listLegalMoves, applyMoveIfLegal, chooseBestMove, scoreChildren };
+  // Async search control wrappers (optional engine exports)
+  function startSearch(fen, options){
+    if (wasmReady && fn_start_search){
+      try { const opt = options ? JSON.stringify(options) : null; return fn_start_search(fen||'', opt); } catch(e){}
+    }
+    return null;
+  }
+  function cancelSearch(){
+    if (wasmReady && fn_cancel_search){ try { fn_cancel_search(); return true; } catch(e){} }
+    return false;
+  }
+  function getSearchStatus(){
+    if (wasmReady && fn_get_search_status){ try { return fn_get_search_status(); } catch(e){} }
+    return null;
+  }
+
+  function setRandomSeed(seed){
+    if (wasmReady && fn_set_seed){ try { fn_set_seed(seed|0); return true; } catch(e){} }
+    return false;
+  }
+
+  function supportsAsync(){ return !!hasAsync; }
+  function supportsScoreChildren(){ return !!hasScoreChildren; }
+
+  return { init, getVersion, evaluateFEN, evaluateFENOptions, evaluateMoveLine, generateDescendants, listLegalMoves, applyMoveIfLegal, chooseBestMove, scoreChildren, startSearch, cancelSearch, getSearchStatus, supportsAsync, supportsScoreChildren, setRandomSeed };
 })();
 
 // Expose bridge on window for pages/scripts that reference window.EngineBridge
