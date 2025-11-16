@@ -96,7 +96,9 @@
       if (!sideWhite && !isBlack(fromP)) return;
       if (toP !== '.' && (isWhite(fromP) === isWhite(toP))) return;
       const uci = rcToSq(fr, fc) + rcToSq(tr, tc) + promo;
-      moves.push({ from: { r: fr, c: fc }, to: { r: tr, c: tc }, uci });
+      const move = { from: { r: fr, c: fc }, to: { r: tr, c: tc }, uci };
+      if (promo) move.promo = promo;
+      moves.push(move);
     };
 
     for (let r = 0; r < 8; r++) {
@@ -109,8 +111,16 @@
         if (pl === 'p') {
           const dir = sideWhite ? -1 : 1; // white moves up (toward lower r)
           const startRank = sideWhite ? 6 : 1;
+          const promoRank = sideWhite ? 0 : 7;
           // single step
-          if (inside(r + dir, c) && pos.board[r + dir][c] === '.') add(r, c, r + dir, c);
+          if (inside(r + dir, c) && pos.board[r + dir][c] === '.') {
+            const tr = r + dir, tc = c;
+            if (tr === promoRank) {
+              add(r, c, tr, tc, 'q'); add(r, c, tr, tc, 'r'); add(r, c, tr, tc, 'b'); add(r, c, tr, tc, 'n');
+            } else {
+              add(r, c, tr, tc);
+            }
+          }
           // double step from start
           if (r === startRank && pos.board[r + dir][c] === '.' && pos.board[r + 2 * dir][c] === '.') add(r, c, r + 2 * dir, c);
           // captures
@@ -118,7 +128,13 @@
             const tr = r + dir, tc = c + dc;
             if (!inside(tr, tc)) continue;
             const target = pos.board[tr][tc];
-            if (target !== '.' && (isWhite(target) !== sideWhite)) add(r, c, tr, tc);
+            if (target !== '.' && (isWhite(target) !== sideWhite)) {
+              if (tr === promoRank) {
+                add(r, c, tr, tc, 'q'); add(r, c, tr, tc, 'r'); add(r, c, tr, tc, 'b'); add(r, c, tr, tc, 'n');
+              } else {
+                add(r, c, tr, tc);
+              }
+            }
           }
         } else if (pl === 'n') {
           const deltas = [[-2, -1], [-2, 1], [-1, -2], [-1, 2], [1, -2], [1, 2], [2, -1], [2, 1]];
@@ -195,8 +211,12 @@
     const board = pos.board.map(row => row.slice());
     const piece = board[move.from.r][move.from.c];
     board[move.from.r][move.from.c] = '.';
+    // Determine promotion piece: prefer explicit arg, else move.promo, else parse from UCI.
+    let promoChar = promo;
+    if (!promoChar && move && move.promo) promoChar = move.promo;
+    if (!promoChar && move && move.uci && move.uci.length > 4) promoChar = move.uci.slice(4, 5).toLowerCase();
     let placed = piece;
-    if (promo) placed = isWhite(piece) ? promo.toUpperCase() : promo.toLowerCase();
+    if (promoChar) placed = isWhite(piece) ? promoChar.toUpperCase() : promoChar.toLowerCase();
     board[move.to.r][move.to.c] = placed;
     const newStm = pos.stm === 'w' ? 'b' : 'w';
     let full = parseInt(pos.full, 10) || 1;

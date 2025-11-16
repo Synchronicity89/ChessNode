@@ -670,7 +670,7 @@
       requestHumanLegalMoves2Ply();
     }
 
-    function tryHumanMove(fromSq, toSq) {
+    function tryHumanMove(fromSq, toSq, evtOrOpts) {
       debugCall('tryHumanMove');
       if (!fromSq || !toSq || fromSq === toSq) return;
       syncSideToMoveFromFen();
@@ -688,6 +688,32 @@
       // When the board is rotated (black bottom), the displayed coordinates are flipped.
       // Convert presentation-space UCI to board-space UCI before applying to FEN.
       let uci = isBoardRotated() ? flipMoveUci180(uciPresentation) : uciPresentation;
+      // Promotion handling: if pawn reaches last rank, append promotion piece (default 'q').
+      try {
+        const ctrlHeld = !!(evtOrOpts && (evtOrOpts.ctrlKey || evtOrOpts.ctrl));
+        const placement = (boardStateFen || '').split(' ')[0] || '';
+        function getPieceAt(sq){
+          const rows = placement.split('/');
+          if (rows.length!==8) return '.';
+          const f=sq.charCodeAt(0)-97; const r=sq.charCodeAt(1)-49; if(f<0||f>7||r<0||r>7) return '.';
+          const rr=7-r; let cc=0; for(const ch of rows[rr]){ if(/^[1-8]$/.test(ch)){ cc+=parseInt(ch,10);} else { if(cc===f) return ch; cc++; } }
+          return '.';
+        }
+        const from = uci.slice(0,2), to = uci.slice(2,4);
+        const mover = getPieceAt(from);
+        const isPawn = mover && mover.toLowerCase()==='p';
+        const toRankNum = (to.charCodeAt(1)-49)+1; // 1..8
+        const isWhitePawn = mover === mover.toUpperCase();
+        const reachesLast = isPawn && ((isWhitePawn && toRankNum===8) || (!isWhitePawn && toRankNum===1));
+        if (reachesLast) {
+          let promo = 'q';
+          if (ctrlHeld) {
+            const choice = (prompt('Promote to (q,r,b,n)?','q') || 'q').trim().toLowerCase();
+            if (/^[qrbn]$/.test(choice)) promo = choice;
+          }
+          uci += promo;
+        }
+      } catch {}
       logLine('HUMAN (' + (humanColor === 'w' ? 'white' : 'black') + ') MOVE REQUEST: ' + uciPresentation + (isBoardRotated() ? (' (board=' + uci + ')') : ''));
       if (!legalHumanMoves.includes(uci)) {
         logLine('ILLEGAL move rejected: ' + uci + ' (not in legal set)');
@@ -772,7 +798,7 @@
       });
 
       // Click-to-move handler for human moves
-      $('#board').on('click', '.square', function () {
+      $('#board').on('click', '.square', function (evt) {
         debugCall('board.square.click');
         const sq = $(this).data('sq');
         if (!sq) return;
@@ -820,7 +846,7 @@
         const fromSq = selectedSquare;
         const toSq = sq;
         selectedSquare = null;
-        tryHumanMove(fromSq, toSq);
+        tryHumanMove(fromSq, toSq, evt);
       });
 
       newGame();
