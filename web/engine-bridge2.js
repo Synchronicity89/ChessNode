@@ -69,7 +69,7 @@
 
   const rcToSq = (r, c) => String.fromCharCode(97 + c) + String.fromCharCode(49 + (7 - r));
 
-  // Material-only evaluation (white positive)
+  // Material-only evaluation (white positive). Returns centipawns.
   const evaluate = (board) => {
     let score = 0;
     for (let r = 0; r < 8; r++) {
@@ -159,6 +159,18 @@
     return null;
   };
 
+  // True if the given color's king is attacked in this position (pseudo-legal attack test)
+  const isKingAttacked = (pos, kingWhite) => {
+    const ksq = findKingSquare(pos.board, kingWhite);
+    if (!ksq) return true; // no king found -> treat as attacked
+    const opp = { ...pos, stm: kingWhite ? 'b' : 'w' };
+    const oppMoves = genMoves(opp);
+    for (const m of oppMoves) {
+      if (m.to.r === ksq.r && m.to.c === ksq.c) return true;
+    }
+    return false;
+  };
+
   // Filter moves by 2-ply rule: after making the move, if any opponent pseudo-legal
   // reply captures the moving side's king, then the move is illegal (pruned).
   const legalMoves2Ply = (fen) => {
@@ -170,15 +182,11 @@
     let nodes = 0;
     for (const m of parentMoves) {
       const np = applyMove(pos, m);
-      const kingSq = findKingSquare(np.board, sideWhite);
-      if (!kingSq) continue; // king already gone -> illegal
-      const replies = genMoves(np);
-      nodes += 1 + replies.length;
-      let kingCapturable = false;
-      for (const rm of replies) {
-        if (rm.to.r === kingSq.r && rm.to.c === kingSq.c) { kingCapturable = true; break; }
+      nodes += 1;
+      if (!isKingAttacked(np, sideWhite)) {
+        // legal if own king is not attacked after the move
+        legal.push(m.uci);
       }
-      if (!kingCapturable) legal.push(m.uci);
     }
     return { moves: legal, nodes };
   };
@@ -205,33 +213,84 @@
 
   const posToFEN = (pos) => `${encodeBoard(pos.board)} ${pos.stm} ${pos.castling || '-'} ${pos.ep || '-'} ${pos.half || '0'} ${pos.full || '1'}`;
 
+  // Basic alpha-beta negamax style search (side to move maximizes its perspective).
+  // We keep evaluation white-positive; for black we negate when comparing.
+  function orderMoves(pos, moves) {
+    // Simple MVV/LVA style: prioritize captures by captured piece value descending.
+    const scored = [];
+    for (const m of moves) {
+      const target = pos.board[m.to.r][m.to.c];
+      const val = target === '.' ? 0 : (pieceValue[target.toLowerCase()] || 0);
+      // Small random jitter to break ties deterministically via PRNG
+      scored.push({ m, score: val + rand() * 0.01 });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.map(s => s.m);
+  }
+
+  function search(pos, depth, alpha, beta, nodesObj) {
+    const sideWhite = pos.stm === 'w';
+    // Generate and filter to legal moves (do not leave own king attacked)
+    const pseudo = genMoves(pos);
+    const legal = [];
+    for (const m of pseudo) {
+      const child = applyMove(pos, m);
+      if (!isKingAttacked(child, sideWhite)) legal.push(m);
+    }
+    if (legal.length === 0) {
+      // Terminal: no legal moves. If in check -> checkmate; else stalemate
+      const inCheck = isKingAttacked(pos, sideWhite);
+      if (inCheck) {
+        // Losing for side to move. Scale with remaining depth to prefer faster mates.
+        const MATE = 1000000;
+        return { score: - (MATE - depth), pv: [] };
+      }
+      return { score: 0, pv: [] };
+    }
+    if (depth === 0) {
+      nodesObj.count++;
+      const baseEval = evaluate(pos.board);
+      return { score: sideWhite ? baseEval : -baseEval, pv: [] };
+    }
+    const ordered = orderMoves(pos, legal);
+    let best = { score: -1e9, pv: [], move: null };
+    for (const m of ordered) {
+      const child = applyMove(pos, m);
+      // Skip moves that leave our own king attacked (illegal when in check)
+      if (isKingAttacked(child, sideWhite)) {
+        continue;
+      }
+      const res = search(child, depth - 1, -beta, -alpha, nodesObj);
+      const curScore = -res.score; // negamax flip back for this ply
+      if (curScore > best.score) {
+        best.score = curScore;
+        best.pv = [m.uci].concat(res.pv);
+        best.move = m;
+      }
+      alpha = Math.max(alpha, curScore);
+      if (alpha >= beta) break; // alpha-beta cutoff
+    }
+    return best;
+  }
+
   const choose = (fen, opts) => {
     const pos = parseFEN(fen);
     if (!pos) return null;
-    const sideWhite = pos.stm === 'w';
-    const moves = genMoves(pos);
-    if (moves.length === 0) return { uci: null, score: 0, nodes: 0, explain: 'No moves available.' };
-    const base = evaluate(pos.board);
-    let bestIdx = -1;
-    let bestScore = sideWhite ? -1e9 : 1e9;
-    let nodes = 0;
-    for (let i = 0; i < moves.length; i++) {
-      const m = moves[i];
-      const np = applyMove(pos, m);
-      const sc = evaluate(np.board);
-      nodes++;
-      if (sideWhite) {
-        if (sc > bestScore) { bestScore = sc; bestIdx = i; }
-      } else {
-        if (sc < bestScore) { bestScore = sc; bestIdx = i; }
-      }
+    // Removed artificial cap: allow arbitrary user-specified depth (be cautious of large branching).
+    const requestedDepth = Math.max(1, (opts && (opts.searchDepth || opts.depth)) || 1);
+    const nodesObj = { count: 0 };
+    const baseEval = evaluate(pos.board);
+    const result = search(pos, requestedDepth, -1e9, 1e9, nodesObj);
+    if (!result.move) {
+      return { uci: null, score: baseEval, nodes: nodesObj.count, explain: 'No moves available.' };
     }
-    if (bestIdx < 0) bestIdx = 0; // fallback
-    const chosen = moves[bestIdx];
-    const cp = bestScore; // absolute eval after move
-    const delta = (sideWhite ? (bestScore - base) : (base - bestScore));
-    const math = `one-ply material: base=${base}cp, after=${bestScore}cp, delta=${delta}cp, nodes=${nodes}`;
-    return { uci: chosen.uci, score: cp, nodes, explain: math };
+    const afterEvalPos = applyMove(pos, result.move);
+    const afterEval = evaluate(afterEvalPos.board);
+    const sideWhite = pos.stm === 'w';
+    const delta = sideWhite ? (afterEval - baseEval) : (baseEval - afterEval);
+    const math = `depth=${requestedDepth} negamax material: base=${baseEval}cp, bestChildAfter=${afterEval}cp, immediateDelta=${delta}cp, nodes=${nodesObj.count}, pv=${result.pv.join(' ')}`;
+    // Score reported as absolute (white perspective) like before: evaluate(after position)
+    return { uci: result.move.uci, score: afterEval, nodes: nodesObj.count, explain: math, depth: requestedDepth, pv: result.pv };
   };
 
   const EngineBridge = {
@@ -250,16 +309,29 @@
     chooseBestMove(fen, optionsJson) {
       try {
         const opts = optionsJson ? JSON.parse(optionsJson) : {};
-        const res = choose(fen, opts) || { uci: null, score: 0, nodes: 0, explain: 'no-result' };
+        const res = choose(fen, opts) || { uci: null, score: 0, nodes: 0, explain: 'no-result', depth: (opts && opts.searchDepth) || 1 };
         const out = {
-          depth: 1,
-          nodesTotal: res.nodes || 0,
-          best: { uci: res.uci, score: res.score },
-          explain: { math: res.explain }
+          depth: res.depth || ((opts && opts.searchDepth) || 1),
+            nodesTotal: res.nodes || 0,
+            best: { uci: res.uci, score: res.score },
+            pv: res.pv || [],
+            explain: { math: res.explain }
         };
         return JSON.stringify(out);
       } catch (e) {
         return JSON.stringify({ error: String(e) });
+      }
+    },
+
+    // Testing/diagnostic helper: is side-to-move in check; if color provided ('w'|'b'), test that color instead
+    isInCheck(fen, color) {
+      try {
+        const pos = parseFEN(fen);
+        if (!pos) return false;
+        const testWhite = (color ? color : pos.stm) === 'w';
+        return isKingAttacked(pos, testWhite);
+      } catch {
+        return false;
       }
     },
 
