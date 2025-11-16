@@ -16,6 +16,7 @@
           renderBoard();
           refreshEvalScore();
           refreshFenDisplay();
+          try { $('#prefMoveEngine').text('--'); $('#prefMoveBoard').text('--'); $('#explainMath').text('--'); } catch {}
         } else {
           if (statusEl && statusEl.length) statusEl.text('unavailable');
           try {
@@ -137,6 +138,7 @@
     const pawns = (cp/100).toFixed(5);
     $('#score').text((cp>=0?'+':'') + pawns);
     logActivity(`Score updated to ${(cp>=0?'+':'') + (cp/100).toFixed(5)}`);
+    try { $('#prefMoveEngine').text('--'); $('#prefMoveBoard').text('--'); $('#explainMath').text('--'); } catch {}
   }
 
   function refreshFenDisplay(){
@@ -145,6 +147,25 @@
     el.val(currentFen);
     try { const inline = $('#fenInputBoard'); if (inline.length) inline.val(currentFen); } catch {}
     logActivity(`FEN: ${currentFen}`);
+  }
+
+  // --- Flip helpers (180° rotation + color swap) ---
+  function flipSquare180(alg){
+    try {
+      if (!alg || alg.length!==2) return alg;
+      const f = alg.charCodeAt(0) - 97; const r = alg.charCodeAt(1) - 49;
+      if (f<0||f>7||r<0||r>7) return alg;
+      const nf = 7 - f; const nr = 7 - r;
+      return String.fromCharCode(97+nf) + String.fromCharCode(49+nr);
+    } catch { return alg; }
+  }
+  function flipMoveUci180(uci){
+    try {
+      if (!uci || uci.length<4) return uci;
+      const from = uci.slice(0,2), to = uci.slice(2,4);
+      const promo = uci.length>4 ? uci.slice(4) : '';
+      return flipSquare180(from) + flipSquare180(to) + promo;
+    } catch { return uci; }
   }
 
   function maybeAppendPromotion(uci, fromAlg, toAlg){
@@ -209,6 +230,7 @@
       const rows = currentFen.split(' ')[0].split('/');
       let sr=srcRC.r, sc=srcRC.c, fenRow=rows[sr];
       let col=0, srcPiece='.';
+      
       for (const ch of fenRow){ if (/^[1-8]$/.test(ch)){ col+=parseInt(ch,10); } else { if (col===sc) srcPiece=ch; col++; } }
       if (srcPiece.toLowerCase()==='p' && (dstRC.r===0 || dstRC.r===7) && (!move.promo)){
         const ev = window.event || {};
@@ -234,6 +256,7 @@
         renderBoard();
         refreshFenDisplay();
         logActivity(`Human move: ${uci}`);
+        try { $('#prefMoveEngine').text('--'); $('#prefMoveBoard').text('--'); $('#explainMath').text('--'); } catch {}
         try { lastRequestedFen = null; } catch {}
         // Defer engine search to next tick so user sees the move immediately
         setTimeout(()=>{
@@ -246,27 +269,35 @@
               const lineCfg = window.EngineEvalConfig && window.EngineEvalConfig.toLineEvalOptions ? window.EngineEvalConfig.toLineEvalOptions() : {};
               const depthVal = Number($('#depth').val()||1); lineCfg.searchDepth = depthVal;
               if (window.EngineBridge && typeof window.EngineBridge.supportsAsync==='function' && window.EngineBridge.supportsAsync()){
-                window.EngineBridge.startSearch(currentFen, lineCfg);
-                lastRequestedFen = currentFen; lastAppliedFromFen = null;
+                const stm0 = currentFen.split(' ')[1];
+                const fenForEngine = (stm0==='b') ? flipFenString(currentFen) : currentFen;
+                window.EngineBridge.startSearch(fenForEngine, lineCfg);
+                lastRequestedFen = currentFen; lastAppliedFromFen = null; lastRequestWasFlipped = (stm0==='b');
                 logActivity(`Engine turn: started async search (Depth=${depthVal})…`);
                 updateRunStateLabel(true);
               } else if (window.EngineBridge && window.EngineBridge.chooseBestMove){
               logActivity(`Engine turn: requesting best move (Depth=${depthVal})…`);
+              const stm0 = currentFen.split(' ')[1];
+              const flipped = (stm0==='b');
+              const fenForEngine = flipped ? flipFenString(currentFen) : currentFen;
               const t0 = performance.now();
-              const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(currentFen, lineCfg) : null;
+              const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(fenForEngine, lineCfg) : null;
               const obj = res ? JSON.parse(res) : null;
               const t1 = performance.now();
               if (obj && obj.best && obj.best.uci){
-                const u = obj.best.uci;
+                const engineUci = obj.best.uci;
+                const boardUci = flipped ? flipMoveUci180(engineUci) : engineUci;
+                try { $('#prefMoveEngine').text(engineUci); $('#prefMoveBoard').text(boardUci); } catch {}
                 const nodesInfo = (typeof obj.nodesTotal === 'number') ? `, nodes=${obj.nodesTotal}` : (typeof obj.best.nodes === 'number') ? `, nodes=${obj.best.nodes}` : '';
                 const pliesInfo = (typeof obj.best.actualPlies === 'number') ? `, plies=${obj.best.actualPlies}` : '';
                 const depthInfo = (typeof obj.depth === 'number') ? `, depthUsed=${obj.depth}` : '';
-                logActivity(`Engine chose: ${u} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
-                const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, u, {castleSafety:true}) : null;
+                logActivity(`Engine chose: ${engineUci} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
+                const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, boardUci, {castleSafety:true}) : null;
                 if (nextFen2 && !/^\{"error"/.test(nextFen2)){
-                  currentFen = nextFen2; addMove(u); refreshLegal(); renderBoard(); refreshFenDisplay();
-                   try { updateQuietRule(u); } catch {}
+                  currentFen = nextFen2; addMove(boardUci); refreshLegal(); renderBoard(); refreshFenDisplay();
+                   try { updateQuietRule(boardUci); } catch {}
                   if (typeof obj.best.score === 'number'){ const pawns = (obj.best.score/100).toFixed(5); $('#score').text((obj.best.score>=0?'+':'') + pawns); }
+                  try { if (obj.explain && obj.explain.math) { $('#explainMath').text(obj.explain.math); } } catch {}
                 } else { logActivity('Engine move application failed', 'err'); }
               } else if (obj && obj.error){ logActivity(`Engine error: ${obj.error}`,'err'); }
               else if (obj && obj.candidates && obj.candidates.length===0){ logActivity('Engine reports no candidate moves', 'warn'); }
@@ -304,8 +335,10 @@
         const lineCfg = window.EngineEvalConfig && window.EngineEvalConfig.toLineEvalOptions ? window.EngineEvalConfig.toLineEvalOptions() : {};
         const depthVal = Number($('#depth').val()||1); lineCfg.searchDepth = depthVal;
         if (window.EngineBridge && typeof window.EngineBridge.supportsAsync==='function' && window.EngineBridge.supportsAsync()){
-          window.EngineBridge.startSearch(currentFen, lineCfg);
-          lastRequestedFen = currentFen; lastAppliedFromFen = null;
+          const stm0 = currentFen.split(' ')[1];
+          const fenForEngine = (stm0==='b') ? flipFenString(currentFen) : currentFen;
+          window.EngineBridge.startSearch(fenForEngine, lineCfg);
+          lastRequestedFen = currentFen; lastAppliedFromFen = null; lastRequestWasFlipped = (stm0==='b');
           logActivity(`Engine turn: started async search (Depth=${depthVal})…`);
           // Try immediate status read to avoid waiting for interval
           try {
@@ -314,13 +347,15 @@
               let st=null; try { st = JSON.parse(statusJson); } catch{}
               updateRunStateLabel(!!(st && st.running));
               if (st && st.status && st.status.best && st.status.best.uci && !st.running){
-                const uci = st.status.best.uci;
+                const engineUci = st.status.best.uci;
+                const boardUci = lastRequestWasFlipped ? flipMoveUci180(engineUci) : engineUci;
                 const fromFenBefore = currentFen;
-                const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, uci, {castleSafety:true}) : null;
+                const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, boardUci, {castleSafety:true}) : null;
                 if (nextFen2 && !/^\{"error"/.test(nextFen2)){
-                  currentFen = nextFen2; addMove(uci); refreshLegal(); renderBoard(); refreshFenDisplay();
+                  currentFen = nextFen2; addMove(boardUci); refreshLegal(); renderBoard(); refreshFenDisplay();
                   lastAppliedFromFen = fromFenBefore;
-                  logActivity(`Applied engine move immediately: ${uci}`,'ok');
+                  try { $('#prefMoveEngine').text(engineUci); $('#prefMoveBoard').text(boardUci); if (st && st.status && st.status.explain && st.status.explain.math) { $('#explainMath').text(st.status.explain.math); } } catch {}
+                  logActivity(`Applied engine move immediately: ${boardUci}`,'ok');
                 }
               } else {
                 updateRunStateLabel(true);
@@ -330,19 +365,24 @@
           updateRunStateLabel(true);
         } else if (window.EngineBridge && window.EngineBridge.chooseBestMove){
           logActivity(`Engine turn: requesting best move (Depth=${depthVal})…`);
+          const stm0 = currentFen.split(' ')[1];
+          const flipped = (stm0==='b');
+          const fenForEngine = flipped ? flipFenString(currentFen) : currentFen;
           const t0 = performance.now();
-          const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(currentFen, lineCfg) : null;
+          const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(fenForEngine, lineCfg) : null;
           const obj = res ? JSON.parse(res) : null;
           const t1 = performance.now();
           if (obj && obj.best && obj.best.uci){
-            const u = obj.best.uci;
+            const engineUci = obj.best.uci;
+            const boardUci = flipped ? flipMoveUci180(engineUci) : engineUci;
+            try { $('#prefMoveEngine').text(engineUci); $('#prefMoveBoard').text(boardUci); if (obj.explain && obj.explain.math) { $('#explainMath').text(obj.explain.math); } } catch {}
             const nodesInfo = (typeof obj.nodesTotal === 'number') ? `, nodes=${obj.nodesTotal}` : (typeof obj.best.nodes === 'number') ? `, nodes=${obj.best.nodes}` : '';
             const pliesInfo = (typeof obj.best.actualPlies === 'number') ? `, plies=${obj.best.actualPlies}` : '';
-            logActivity(`Engine chose: ${u} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}`, 'ok');
-            const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, u, {castleSafety:true}) : null;
+            logActivity(`Engine chose: ${engineUci} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}`, 'ok');
+            const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, boardUci, {castleSafety:true}) : null;
             if (nextFen2 && !/^\{"error"/.test(nextFen2)){
-              currentFen = nextFen2; addMove(u); refreshLegal(); renderBoard(); refreshFenDisplay();
-               try { updateQuietRule(u); } catch {}
+              currentFen = nextFen2; addMove(boardUci); refreshLegal(); renderBoard(); refreshFenDisplay();
+               try { updateQuietRule(boardUci); } catch {}
               if (typeof obj.best.score === 'number'){ const pawns = (obj.best.score/100).toFixed(5); $('#score').text((obj.best.score>=0?'+':'') + pawns); }
             } else { logActivity('Engine move application failed', 'err'); }
             updateRunStateLabel(false);
@@ -361,6 +401,7 @@
     refreshLegal(); renderBoard(); addMove('Loaded FEN');
     quietHalfPlies = 0; selfPlayActive = false;
     refreshEvalScore(); refreshFenDisplay();
+    try { $('#prefMoveEngine').text('--'); $('#prefMoveBoard').text('--'); $('#explainMath').text('--'); } catch {}
     logActivity('Loaded FEN from textbox');
     // Immediate engine move if needed on loaded position
     try {
@@ -372,23 +413,29 @@
         const lineCfg = window.EngineEvalConfig && window.EngineEvalConfig.toLineEvalOptions ? window.EngineEvalConfig.toLineEvalOptions() : {};
         const depthVal = Number($('#depth').val()||1); lineCfg.searchDepth = depthVal;
         logActivity(`Engine turn: requesting best move (Depth=${depthVal})…`);
+        const stm0 = currentFen.split(' ')[1];
+        const flipped = (stm0==='b');
+        const fenForEngine = flipped ? flipFenString(currentFen) : currentFen;
         const t0 = performance.now();
-        const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(currentFen, lineCfg) : null;
+        const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(fenForEngine, lineCfg) : null;
         const obj = res ? JSON.parse(res) : null;
         const t1 = performance.now();
-        if (obj && obj.best && obj.best.uci){
-          const u = obj.best.uci;
+          if (obj && obj.best && obj.best.uci){
+          const engineUci = obj.best.uci;
+          const boardUci = flipped ? flipMoveUci180(engineUci) : engineUci;
+            try { $('#prefMoveEngine').text(engineUci); $('#prefMoveBoard').text(boardUci); } catch {}
           const nodesInfo = (typeof obj.nodesTotal === 'number') ? `, nodes=${obj.nodesTotal}` : (typeof obj.best.nodes === 'number') ? `, nodes=${obj.best.nodes}` : '';
           const pliesInfo = (typeof obj.best.actualPlies === 'number') ? `, plies=${obj.best.actualPlies}` : '';
           const depthInfo = (typeof obj.depth === 'number') ? `, depthUsed=${obj.depth}` : '';
-          logActivity(`Engine chose: ${u} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
+          logActivity(`Engine chose: ${engineUci} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
           try { if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); } } catch {}
           try { if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); } } catch {}
-          const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, u, {castleSafety:true}) : null;
+          const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, boardUci, {castleSafety:true}) : null;
           if (nextFen2 && !/^\{"error"/.test(nextFen2)){
-            currentFen = nextFen2; addMove(u); refreshLegal(); renderBoard(); refreshFenDisplay();
-             try { updateQuietRule(u); } catch {}
+            currentFen = nextFen2; addMove(boardUci); refreshLegal(); renderBoard(); refreshFenDisplay();
+             try { updateQuietRule(boardUci); } catch {}
             if (typeof obj.best.score === 'number'){ const pawns = (obj.best.score/100).toFixed(5); $('#score').text((obj.best.score>=0?'+':'') + pawns); }
+            try { if (obj.explain && obj.explain.math) { $('#explainMath').text(obj.explain.math); } } catch {}
           } else { logActivity('Engine move application failed', 'err'); }
         } else if (obj && obj.error){ logActivity(`Engine error: ${obj.error}`,'err'); }
         else if (obj && obj.candidates && obj.candidates.length===0){ logActivity('Engine reports no candidate moves', 'warn'); }
@@ -472,6 +519,7 @@
     refreshLegal(); renderBoard(); addMove('Loaded FEN');
     quietHalfPlies = 0; selfPlayActive = false;
     refreshEvalScore(); refreshFenDisplay();
+    try { $('#prefMoveEngine').text('--'); $('#prefMoveBoard').text('--'); $('#explainMath').text('--'); } catch {}
     logActivity('Loaded FEN from inline textbox');
     // Set side dropdown to opposite of side-to-move so it's engine's turn
     try {
@@ -485,22 +533,27 @@
       const lineCfg = window.EngineEvalConfig && window.EngineEvalConfig.toLineEvalOptions ? window.EngineEvalConfig.toLineEvalOptions() : {};
       const depthVal = Number($('#depth').val()||1); lineCfg.searchDepth = depthVal;
       logActivity(`Engine turn: requesting best move (Depth=${depthVal})…`);
+      const stm0 = currentFen.split(' ')[1];
+      const flipped = (stm0==='b');
+      const fenForEngine = flipped ? flipFenString(currentFen) : currentFen;
       const t0 = performance.now();
-      const res = window.EngineBridge.chooseBestMove(currentFen, lineCfg);
+      const res = window.EngineBridge.chooseBestMove(fenForEngine, lineCfg);
       const obj = res ? JSON.parse(res) : null;
       const t1 = performance.now();
       if (obj && obj.best && obj.best.uci){
-        const u = obj.best.uci;
+        const engineUci = obj.best.uci;
+        const boardUci = flipped ? flipMoveUci180(engineUci) : engineUci;
         const nodesInfo = (typeof obj.nodesTotal === 'number') ? `, nodes=${obj.nodesTotal}` : (typeof obj.best.nodes === 'number') ? `, nodes=${obj.best.nodes}` : '';
         const pliesInfo = (typeof obj.best.actualPlies === 'number') ? `, plies=${obj.best.actualPlies}` : '';
         const depthInfo = (typeof obj.depth === 'number') ? `, depthUsed=${obj.depth}` : '';
-        logActivity(`Engine chose: ${u} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
+        logActivity(`Engine chose: ${engineUci} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
         if ($('#showPv').is(':checked') && Array.isArray(obj.best.pv) && obj.best.pv.length){ logActivity(`PV: ${obj.best.pv.join(' ')}`); }
-        const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, u, {castleSafety:true}) : null;
+        const nextFen2 = window.EngineBridge.applyMoveIfLegal ? window.EngineBridge.applyMoveIfLegal(currentFen, boardUci, {castleSafety:true}) : null;
         if (nextFen2 && !/^\{"error"/.test(nextFen2)){
-          currentFen = nextFen2; addMove(u); refreshLegal(); renderBoard(); refreshFenDisplay();
-             try { updateQuietRule(u); } catch {}
+          currentFen = nextFen2; addMove(boardUci); refreshLegal(); renderBoard(); refreshFenDisplay();
+             try { updateQuietRule(boardUci); } catch {}
           if (typeof obj.best.score === 'number'){ const pawns = (obj.best.score/100).toFixed(5); $('#score').text((obj.best.score>=0?'+':'') + pawns); }
+          try { if (obj.explain && obj.explain.math) { $('#explainMath').text(obj.explain.math); } } catch {}
         } else { logActivity('Engine move application failed', 'err'); }
       } else if (obj && obj.error){ logActivity(`Engine error: ${obj.error}`,'err'); }
       else if (obj && obj.candidates && obj.candidates.length===0){ logActivity('Engine reports no candidate moves', 'warn'); }
@@ -533,6 +586,7 @@
   let lastHaveMoves = null;
   let lastEngineTurn = null;
   let lastRequestedFen = null;
+  let lastRequestWasFlipped = false;
   let engineUnavailableNotified = false;
   function updateRunStateLabel(running){
     try {
@@ -590,8 +644,10 @@
         if (asyncOK){
           if (enginePaused) return;
           if (lastRequestedFen !== currentFen){
-            window.EngineBridge.startSearch(currentFen, lineCfg);
-            lastRequestedFen = currentFen;
+            const stm0 = currentFen.split(' ')[1];
+            const fenForEngine = (stm0==='b') ? flipFenString(currentFen) : currentFen;
+            window.EngineBridge.startSearch(fenForEngine, lineCfg);
+            lastRequestedFen = currentFen; lastRequestWasFlipped = (stm0==='b');
             lastAppliedFromFen = null;
             logActivity(`Engine turn: started async search (Depth=${depthVal})…`);
             updateRunStateLabel(true);
@@ -601,8 +657,11 @@
             let st=null; try { st = JSON.parse(statusJson); } catch{}
             updateRunStateLabel(!!(st && st.running));
             if (st && st.status && st.status.best && st.status.best.uci && !st.running && lastAppliedFromFen !== currentFen){
-              logActivity(`Search done: best=${st.status.best.uci} (score=${typeof st.status.best.score==='number'?st.status.best.score:'n/a'})`);
-              const uci = st.status.best.uci;
+              const engineUci = st.status.best.uci;
+              const boardUci = lastRequestWasFlipped ? flipMoveUci180(engineUci) : engineUci;
+              logActivity(`Search done: best=${engineUci} (score=${typeof st.status.best.score==='number'?st.status.best.score:'n/a'})`);
+              try { $('#prefMoveEngine').text(engineUci); $('#prefMoveBoard').text(boardUci); if (st && st.status && st.status.explain && st.status.explain.math) { $('#explainMath').text(st.status.explain.math); } } catch {}
+              const uci = boardUci;
               const move = legalCache.find(m=>m.uci===uci) || legalCache.find(m=> (m.from+m.to)===uci.slice(0,4));
               const fromFenBefore = currentFen;
               if (move){
@@ -633,20 +692,24 @@
           }
         } else {
           if (lastRequestedFen === currentFen) return; // only once per FEN
-          lastRequestedFen = currentFen;
+          lastRequestedFen = currentFen; lastRequestWasFlipped = (stm==='b');
           logActivity(`Engine turn: requesting best move (Depth=${depthVal})…`);
+          const flipped = (stm==='b');
+          const fenForEngine = flipped ? flipFenString(currentFen) : currentFen;
           const t0 = performance.now();
-          const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(currentFen, lineCfg) : null;
+          const res = window.EngineBridge.chooseBestMove ? window.EngineBridge.chooseBestMove(fenForEngine, lineCfg) : null;
           const obj = res ? JSON.parse(res) : null;
           const t1 = performance.now();
           if (obj && obj.best && obj.best.uci){
-            const uci = obj.best.uci;
+            const engineUci = obj.best.uci;
+            const boardUci = flipped ? flipMoveUci180(engineUci) : engineUci;
+            try { $('#prefMoveEngine').text(engineUci); $('#prefMoveBoard').text(boardUci); if (obj.explain && obj.explain.math) { $('#explainMath').text(obj.explain.math); } } catch {}
             const nodesInfo = (typeof obj.nodesTotal === 'number') ? `, nodes=${obj.nodesTotal}` : (typeof obj.best.nodes === 'number') ? `, nodes=${obj.best.nodes}` : '';
             const pliesInfo = (typeof obj.best.actualPlies === 'number') ? `, plies=${obj.best.actualPlies}` : '';
             const depthInfo = (typeof obj.depth === 'number') ? `, depthUsed=${obj.depth}` : '';
-            logActivity(`Engine chose: ${uci} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
+            logActivity(`Engine chose: ${engineUci} (score=${typeof obj.best.score==='number'?obj.best.score:'n/a'} cp) in ${(t1-t0).toFixed(1)} ms${nodesInfo}${pliesInfo}${depthInfo}`, 'ok');
             updateRunStateLabel(false); // synchronous path; treat as idle after response
-            const move = legalCache.find(m=>m.uci===uci) || legalCache.find(m=> (m.from+m.to)===uci.slice(0,4));
+            const move = legalCache.find(m=>m.uci===boardUci) || legalCache.find(m=> (m.from+m.to)===boardUci.slice(0,4));
             if (move){ selectedSq = move.from; onCellClick(move.to,''); }
             if (typeof obj.best.score === 'number'){
               const pawns = (obj.best.score/100).toFixed(5);

@@ -17,7 +17,7 @@ extern "C" {
 static std::string initialFen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 static char stm(const std::string &fen){ auto p = fen.find(' '); return (p==std::string::npos)?'w':fen[p+1]; }
-static std::string optJson(int depth){ std::ostringstream o; o << "{\"searchDepth\":"<< depth <<"}"; return o.str(); }
+static std::string optJson(int depth, bool debug){ std::ostringstream o; o << "{\"searchDepth\":"<< depth; if(debug) o << ",\"debugNegamax\":true"; o << "}"; return o.str(); }
 
 struct ChildRow{
     std::string uci;
@@ -81,8 +81,8 @@ static std::vector<ChildRow> parseChildren(const std::string &json){
 
 static std::vector<std::string> extractMoves(const std::string &json){ std::vector<std::string> out; size_t i=0; while(true){ size_t p = json.find("\"uci\":\"", i); if (p==std::string::npos) break; auto u = extractString(json, "\"uci\":\"", p+7); out.push_back(u); i = p+7; } return out; }
 
-static void dumpOnce(const std::string &fen, int depth, bool engineCentricSort){
-    std::string opts = optJson(depth);
+static void dumpOnce(const std::string &fen, int depth, bool engineCentricSort, bool debug){
+    std::string opts = optJson(depth, debug);
     const char* res = score_children(fen.c_str(), opts.c_str()); if (!res){ std::cerr << "score_children failed" << std::endl; return; }
     std::string j(res);
     auto rows = parseChildren(j);
@@ -118,15 +118,15 @@ static void dumpOnce(const std::string &fen, int depth, bool engineCentricSort){
     std::cout << "Note: agg = deep search score (white-centric); imm = immediate leaf eval after the move with no further search.\n";
 }
 
-static void recurseDump(const std::string &fen, int depth, int recurse, bool engineCentricSort){
-    dumpOnce(fen, depth, engineCentricSort);
+static void recurseDump(const std::string &fen, int depth, int recurse, bool engineCentricSort, bool debug){
+    dumpOnce(fen, depth, engineCentricSort, debug);
     if (recurse<=0) return;
     // apply each legal move and dump once more at reduced recurse
     const char* gen = list_legal_moves(fen.c_str(), nullptr, "{\"includeCastling\":true,\"castleSafety\":true}");
     if (!gen){ return; }
     std::string j(gen);
     auto moves = extractMoves(j);
-    for (const auto &u : moves){ const char* nf = apply_move_if_legal(fen.c_str(), u.c_str(), "{\"includeCastling\":true,\"castleSafety\":true}"); if (!nf || std::string(nf).find("error")!=std::string::npos) continue; std::cout << "\n> After "<< u << ":\n"; recurseDump(nf, depth, recurse-1, engineCentricSort); }
+    for (const auto &u : moves){ const char* nf = apply_move_if_legal(fen.c_str(), u.c_str(), "{\"includeCastling\":true,\"castleSafety\":true}"); if (!nf || std::string(nf).find("error")!=std::string::npos) continue; std::cout << "\n> After "<< u << ":\n"; recurseDump(nf, depth, recurse-1, engineCentricSort, debug); }
 }
 
 static std::string rotateAndSwap(const std::string &placement){
@@ -160,15 +160,17 @@ static int evalFen(const std::string &fen){ return evaluate_fen_opts(fen.c_str()
 
 int main(int argc, char** argv){
     std::string fen = initialFen; int depth=3; int recurse=0; bool engineCentricSort=false; bool doFlip=false; bool doSym=false;
+    bool debug=false;
     for (int i=1;i<argc;i++){
         std::string a(argv[i]);
         if (a=="--fen" && i+1<argc){ fen = argv[++i]; }
         else if (a=="--depth" && i+1<argc){ depth = std::max(1, std::atoi(argv[++i])); }
         else if (a=="--recurse" && i+1<argc){ recurse = std::max(0, std::atoi(argv[++i])); }
         else if (a=="--engineCentric") engineCentricSort = true;
+        else if (a=="--debug") debug = true;
         else if (a=="--flip") doFlip = true;
         else if (a=="--symmetryTest") doSym = true;
-        else if (a=="--help"){ std::cout << "Usage: score_children_dump_cli --fen <FEN> --depth <N> [--recurse <plys>] [--engineCentric] [--flip] [--symmetryTest]\n"; return 0; }
+        else if (a=="--help"){ std::cout << "Usage: score_children_dump_cli --fen <FEN> --depth <N> [--recurse <plys>] [--engineCentric] [--flip] [--symmetryTest] [--debug]\n"; return 0; }
     }
     if (doFlip){
         std::istringstream ss(fen); std::string p,s,c,e,h,fn; if(!(ss>>p>>s>>c>>e>>h>>fn)){ std::cerr<<"Bad FEN"<<std::endl; return 1; }
@@ -192,6 +194,6 @@ int main(int argc, char** argv){
         }
         std::cout << (ok?"Symmetry OK":"Symmetry FAIL") << "\n"; return ok?0:1;
     }
-    recurseDump(fen, depth, recurse, engineCentricSort);
+    recurseDump(fen, depth, recurse, engineCentricSort, debug);
     return 0;
 }

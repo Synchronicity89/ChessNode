@@ -136,6 +136,42 @@ static std::string jsonEscape(const std::string &in){
     return out;
 }
 
+#ifdef ENGINE_EXPLAIN_MATH
+struct MatCounts {
+    int Pw=0,Nw=0,Bw=0,Rw=0,Qw=0; // kings scored 0, omit
+    int pb=0,nb=0,bb=0,rb=0,qb=0;
+    int W=0,B=0,total=0;
+};
+
+static MatCounts materialCountsFromFen(const char* fen){
+    MatCounts mc; if(!fen) return mc;
+    std::string s(fen); size_t sp = s.find(' ');
+    std::string placement = (sp==std::string::npos)? s : s.substr(0, sp);
+    for(char ch: placement){
+        if(ch=='/' || (ch>='1' && ch<='8')) continue;
+        switch(ch){
+            case 'P': mc.Pw++; mc.W+=100; break; case 'p': mc.pb++; mc.B+=100; break;
+            case 'N': mc.Nw++; mc.W+=300; break; case 'n': mc.nb++; mc.B+=300; break;
+            case 'B': mc.Bw++; mc.W+=300; break; case 'b': mc.bb++; mc.B+=300; break;
+            case 'R': mc.Rw++; mc.W+=500; break; case 'r': mc.rb++; mc.B+=500; break;
+            case 'Q': mc.Qw++; mc.W+=900; break; case 'q': mc.qb++; mc.B+=900; break;
+            default: break; // K/k score 0
+        }
+    }
+    mc.total = mc.W - mc.B;
+    return mc;
+}
+
+static std::string materialFormulaString(const MatCounts& mc, const char* label){
+    std::ostringstream os;
+    os << (label?label:"base") << " material (white-minus-black)\n";
+    os << "W = 100*"<<mc.Pw<<" + 300*"<<mc.Nw<<" + 300*"<<mc.Bw<<" + 500*"<<mc.Rw<<" + 900*"<<mc.Qw<<" = "<< mc.W <<"\n";
+    os << "B = 100*"<<mc.pb<<" + 300*"<<mc.nb<<" + 300*"<<mc.bb<<" + 500*"<<mc.rb<<" + 900*"<<mc.qb<<" = "<< mc.B <<"\n";
+    os << "Total = W - B = "<< mc.W <<" - "<< mc.B <<" = "<< mc.total;
+    return os.str();
+}
+#endif
+
 // Extract UCI move strings from list_legal_moves JSON (very simple pattern scan)
 static std::vector<std::string> extractUcis(const std::string &s){
     std::vector<std::string> out; size_t pos=0; const std::string pat="\"uci\":\"";
@@ -159,6 +195,8 @@ static bool parseBoolOption(const char* json, const char* key, bool defVal){
 // Fen helpers
 static char fenSideToMove(const char* fen){ if(!fen) return 'w'; std::string s(fen); size_t sp=s.find(' '); return (sp!=std::string::npos && sp+1<s.size())? s[sp+1] : 'w'; }
 }
+
+extern "C" int side_in_check(const char*);
 
 // --------------------- Global RNG (configurable seed) ----------------------
 namespace {
@@ -229,6 +267,12 @@ extern "C" const char* choose_best_move(const char* fen, const char* optionsJson
     if(!fen || !*fen){ g = "{\"error\":\"no-fen\"}"; return g.c_str(); }
     extern const char* list_legal_moves(const char*, const char*, const char*);
     extern const char* apply_move_if_legal(const char*, const char*, const char*);
+    // Enforce colorblind: engine must only be asked for white to move
+    if(fenSideToMove(fen) == 'b'){
+        // Hard fail as illegal input; this is production behavior
+        g = "{\"error\":\"illegal-input: black-to-move not allowed\"}";
+        return g.c_str();
+    }
     const char* movesJson = list_legal_moves(fen, nullptr, optionsJson);
     if(!movesJson || !*movesJson){ g = "{\"error\":\"no-moves\"}"; return g.c_str(); }
     std::vector<std::string> ucis = extractUcis(std::string(movesJson));
@@ -245,7 +289,9 @@ extern "C" const char* choose_best_move(const char* fen, const char* optionsJson
     int maxDepth = parseIntOption(optionsJson, "searchDepth", 1);
     if(maxDepth<1) maxDepth = 1; // no upper clamp
     bool extOnCap = parseBoolOption(optionsJson, "extendOnCapture", true);
+    bool dbgFlag = parseBoolOption(optionsJson, "debugNegamax", false);
     bool extOnChk = parseBoolOption(optionsJson, "extendOnCheck", false); (void)extOnChk; // placeholder
+    bool colorblindSearch = parseBoolOption(optionsJson, "colorblindSearch", true);
 
     // Base evaluation (colorblind, side-agnostic)
     int baseEval = evaluate_white_minus_black_material(fen);
@@ -255,7 +301,7 @@ extern "C" const char* choose_best_move(const char* fen, const char* optionsJson
     std::ostringstream cand; bool first=true;
 
     // Minimal negamax with (optional) single-ply capture and check extensions
-    extern int side_in_check(const char*);
+    
     // Quiescence: extend captures to achieve material stability (no alpha-beta yet for simplicity)
     std::function<int(const char*, int, int, int)> qsearch = [&](const char* posFen, int depthLimit, int alpha, int beta){
         char s = fenSideToMove(posFen);
@@ -297,8 +343,15 @@ extern "C" const char* choose_best_move(const char* fen, const char* optionsJson
         }
         int tte; std::string ttb; if(ttProbe(posFen, depth, tte, ttb)) return tte;
         const char* childList = list_legal_moves(posFen, nullptr, optionsJson);
-        if(!childList) return 0; std::vector<std::string> moves = extractUcis(std::string(childList));
-        if(moves.empty()) return 0;
+        if(!childList){
+            int stand = evaluate_white_minus_black_material(posFen);
+            return (s=='w') ? stand : -stand;
+        }
+        std::vector<std::string> moves = extractUcis(std::string(childList));
+        if(moves.empty()){
+            int stand = evaluate_white_minus_black_material(posFen);
+            return (s=='w') ? stand : -stand;
+        }
         int base = evaluate_white_minus_black_material(posFen);
         int bestN = -10000000; std::string bestLocal;
         for(const auto &mv: moves){
@@ -323,6 +376,59 @@ extern "C" const char* choose_best_move(const char* fen, const char* optionsJson
         return bestN;
     };
 
+    // Colorblind max-search (always maximize white-minus-black eval; no sign flips)
+    std::function<int(const char*, int, int, int)> qsearch_cb = [&](const char* posFen, int depthLimit, int alpha, int beta){
+        int stand = evaluate_white_minus_black_material(posFen);
+        if(stand >= beta) return stand;
+        if(stand > alpha) alpha = stand;
+        if(depthLimit <= 0) return stand;
+        const char* childList = list_legal_moves(posFen, nullptr, optionsJson);
+        if(!childList) return stand;
+        std::vector<std::string> moves = extractUcis(std::string(childList));
+        if(moves.empty()) return stand;
+        int base = evaluate_white_minus_black_material(posFen);
+        for(const auto &mv: moves){
+#if !defined(__EMSCRIPTEN__) || defined(__EMSCRIPTEN_PTHREADS__)
+            if(g_search.cancel.load()) break;
+#endif
+            const char* nfC = apply_move_if_legal(posFen, mv.c_str(), optionsJson);
+            std::string nfStr = nfC ? std::string(nfC) : std::string(posFen);
+            int childE = evaluate_white_minus_black_material(nfStr.c_str());
+            bool isCap = (childE != base);
+            if(!isCap) continue;
+            int score = qsearch_cb(nfStr.c_str(), depthLimit-1, alpha, beta);
+            if(score >= beta) return score;
+            if(score > alpha) alpha = score;
+        }
+        return alpha;
+    };
+    std::function<int(const char*, int, int, int)> maxsearch_cb = [&](const char* posFen, int depth, int alpha, int beta){
+#if !defined(__EMSCRIPTEN__) || defined(__EMSCRIPTEN_PTHREADS__)
+        if((depth > 0) && g_search.cancel.load()) return 0;
+#endif
+        if(depth <= 0){ return qsearch_cb(posFen, 8, alpha, beta); }
+        int tte; std::string ttb; if(ttProbe(posFen, depth, tte, ttb)) return tte;
+        const char* childList = list_legal_moves(posFen, nullptr, optionsJson);
+        int stand = evaluate_white_minus_black_material(posFen);
+        if(!childList) return stand;
+        std::vector<std::string> moves = extractUcis(std::string(childList));
+        if(moves.empty()) return stand;
+        int bestN = -10000000; std::string bestLocal;
+        for(const auto &mv: moves){
+#if !defined(__EMSCRIPTEN__) || defined(__EMSCRIPTEN_PTHREADS__)
+            if(g_search.cancel.load()) break;
+#endif
+            const char* nfC = apply_move_if_legal(posFen, mv.c_str(), optionsJson);
+            std::string nfStr = nfC ? std::string(nfC) : std::string(posFen);
+            int score = maxsearch_cb(nfStr.c_str(), depth-1, alpha, beta);
+            if(score > bestN){ bestN = score; bestLocal = mv; }
+            if(score > alpha) alpha = score;
+            if(alpha >= beta) break;
+        }
+        ttStore(posFen, depth, bestN, bestLocal);
+        return bestN;
+    };
+
     // Collect per-move data; apply random tie-break among max agg moves
     std::vector<int> aggVals; aggVals.reserve(ucis.size());
     std::vector<int> immVals; immVals.reserve(ucis.size());
@@ -331,31 +437,63 @@ extern "C" const char* choose_best_move(const char* fen, const char* optionsJson
         const char* nextFen = apply_move_if_legal(fen, m.c_str(), optionsJson);
         int childEval = evaluate_white_minus_black_material(nextFen ? nextFen : fen);
         int agg;
-        if(maxDepth<=1){
-            agg = (side=='w') ? childEval : -childEval;
+        if(colorblindSearch){
+            agg = (maxDepth<=1) ? childEval : maxsearch_cb(nextFen?nextFen:fen, maxDepth-1, -10000000, 10000000);
         } else {
-            // Negamax returns a score from the perspective of the side to move at its root (here: opponent).
-            // Convert to current mover's perspective by negating.
-            agg = -negamax(nextFen?nextFen:fen, maxDepth-1, true, -10000000, 10000000);
+            if(maxDepth<=1){
+                agg = (side=='w') ? childEval : -childEval;
+            } else {
+                agg = -negamax(nextFen?nextFen:fen, maxDepth-1, true, -10000000, 10000000);
+            }
         }
-        int imm = (side=='w') ? (childEval - baseEval) : -(childEval - baseEval);
+        int imm = (childEval - baseEval);
         aggVals.push_back(agg); immVals.push_back(imm); pvSingle.push_back(m);
         if(agg > bestScore){ bestScore = agg; best = m; }
     }
     // Random tie-break among moves whose agg == bestScore
     std::vector<int> tieIdx; for(size_t i=0;i<aggVals.size();++i){ if(aggVals[i]==bestScore) tieIdx.push_back((int)i); }
     if(tieIdx.size()>1){ std::uniform_int_distribution<int> dist(0,(int)tieIdx.size()-1); int chosen = tieIdx[dist(g_rng)]; best = ucis[chosen]; }
-    for(size_t i=0;i<ucis.size();++i){ if(!first) cand << ","; first=false; cand << "{\"uci\":\"" << jsonEscape(ucis[i]) << "\",\"agg\":" << aggVals[i] << ",\"imm\":" << immVals[i] << ",\"nodes\":1,\"actualPlies\":" << maxDepth << ",\"pv\":[\"" << jsonEscape(pvSingle[i]) << "\"]}"; }
+    for(size_t i=0;i<ucis.size();++i){
+        if(!first) cand << ","; first=false;
+        cand << "{\"uci\":\"" << jsonEscape(ucis[i]) << "\",\"agg\":" << aggVals[i] << ",\"imm\":" << immVals[i] << ",\"nodes\":1,\"actualPlies\":" << maxDepth << ",\"pv\":[\"" << jsonEscape(pvSingle[i]) << "\"]";
+        if(dbgFlag){ cand << ",\"dbg\":{\"base\":" << (colorblindSearch ? baseEval : ((side=='w')? baseEval : -baseEval)) << "}}"; }
+        else { cand << "}"; }
+    }
     // Record cache depth (ply 1)
     cacheRecord(fen, maxDepth);
 
-    g = std::string("{\"depth\":") + std::to_string(maxDepth) + ",\"best\":{\"uci\":\"" + jsonEscape(best) + "\",\"score\":" + std::to_string(bestScore) + ",\"imm\":0,\"nodes\":1,\"actualPlies\":" + std::to_string(maxDepth) + ",\"pv\":[\"" + jsonEscape(best) + "\"]},\"candidates\":[" + cand.str() + "],\"baseEval\":" + std::to_string((side=='w')? baseEval : -baseEval) + "}";
+#ifdef ENGINE_EXPLAIN_MATH
+    // Build mathematical explanation for chosen move
+    const char* nfBest = apply_move_if_legal(fen, best.c_str(), optionsJson);
+    MatCounts baseC = materialCountsFromFen(fen);
+    MatCounts childC = materialCountsFromFen(nfBest ? nfBest : fen);
+    int immBest = childC.total - baseC.total;
+    std::ostringstream math;
+    math << materialFormulaString(baseC, "base") << "\n\n";
+    std::string childLabel = std::string("child after ") + best;
+    math << materialFormulaString(childC, childLabel.c_str()) << "\n\n";
+    math << "Immediate delta = child - base = " << childC.total << " - " << baseC.total << " = " << immBest << "\n";
+    if(maxDepth>1){ math << "Aggregate (search depth "<< maxDepth << ") score = " << bestScore << " (may include deeper tactics)"; }
+    std::string mathEsc = jsonEscape(math.str());
+    g = std::string("{\"depth\":") + std::to_string(maxDepth)
+        + ",\"best\":{\"uci\":\"" + jsonEscape(best) + "\",\"score\":" + std::to_string(bestScore)
+        + ",\"imm\":" + std::to_string(immBest) + ",\"nodes\":1,\"actualPlies\":" + std::to_string(maxDepth) + ",\"pv\":[\"" + jsonEscape(best) + "\"]}"
+        + ",\"candidates\":[" + cand.str() + "]"
+        + ",\"baseEval\":" + std::to_string(colorblindSearch ? baseEval : ((side=='w')? baseEval : -baseEval))
+        + ",\"explain\":{\"type\":\"material\",\"math\":\"" + mathEsc + "\"}}";
+#else
+    g = std::string("{\"depth\":") + std::to_string(maxDepth) + ",\"best\":{\"uci\":\"" + jsonEscape(best) + "\",\"score\":" + std::to_string(bestScore) + ",\"imm\":0,\"nodes\":1,\"actualPlies\":" + std::to_string(maxDepth) + ",\"pv\":[\"" + jsonEscape(best) + "\"]},\"candidates\":[" + cand.str() + "],\"baseEval\":" + std::to_string(colorblindSearch ? baseEval : ((side=='w')? baseEval : -baseEval)) + "}";
+#endif
     return g.c_str();
 }
 
 extern "C" const char* score_children(const char* fen, const char* optionsJson){
     static std::string g;
     if(!fen || !*fen){ g = "{\"error\":\"no-fen\"}"; return g.c_str(); }
+    if(fenSideToMove(fen) == 'b'){
+        g = "{\"error\":\"illegal-input: black-to-move not allowed\"}";
+        return g.c_str();
+    }
     extern const char* list_legal_moves(const char*, const char*, const char*);
     extern const char* apply_move_if_legal(const char*, const char*, const char*);
     const char* movesJson = list_legal_moves(fen, nullptr, optionsJson);
@@ -366,8 +504,10 @@ extern "C" const char* score_children(const char* fen, const char* optionsJson){
     int maxDepth = parseIntOption(optionsJson, "searchDepth", 1); if(maxDepth<1) maxDepth=1; // no upper clamp
     bool extOnCap = parseBoolOption(optionsJson, "extendOnCapture", true);
     bool extOnChk = parseBoolOption(optionsJson, "extendOnCheck", false); (void)extOnChk;
+    bool dbgFlag = parseBoolOption(optionsJson, "debugNegamax", false);
+    bool colorblindSearch = parseBoolOption(optionsJson, "colorblindSearch", true);
 
-    extern int side_in_check(const char*);
+    
     // Quiescence for this function scope
     std::function<int(const char*, int, int, int)> qsearch = [&](const char* posFen, int depthLimit, int alpha, int beta){
         char sQ = fenSideToMove(posFen);
@@ -402,7 +542,8 @@ extern "C" const char* score_children(const char* fen, const char* optionsJson){
         if(depth<=0){ return qsearch(posFen, 8, alpha, beta); }
         int tte; std::string ttb; if(ttProbe(posFen, depth, tte, ttb)) return tte;
         const char* childList = list_legal_moves(posFen, nullptr, optionsJson);
-        if(!childList) return 0; std::vector<std::string> moves = extractUcis(std::string(childList)); if(moves.empty()) return 0;
+        if(!childList){ int stand=evaluate_white_minus_black_material(posFen); return (s=='w')?stand:-stand; }
+        std::vector<std::string> moves = extractUcis(std::string(childList)); if(moves.empty()){ int stand=evaluate_white_minus_black_material(posFen); return (s=='w')?stand:-stand; }
         int base = evaluate_white_minus_black_material(posFen);
         int bestN = -10000000; std::string bestLocal;
         for(const auto &mv: moves){
@@ -425,18 +566,70 @@ extern "C" const char* score_children(const char* fen, const char* optionsJson){
         ttStore(posFen, depth, bestN, bestLocal); return bestN;
     };
 
+    // Colorblind max-search variant
+    std::function<int(const char*, int, int, int)> qsearch_cb = [&](const char* posFen, int depthLimit, int alpha, int beta){
+        int stand = evaluate_white_minus_black_material(posFen);
+        if(stand >= beta) return stand;
+        if(stand > alpha) alpha = stand;
+        if(depthLimit <= 0) return stand;
+        const char* childList = list_legal_moves(posFen, nullptr, optionsJson);
+        if(!childList) return stand; std::vector<std::string> moves = extractUcis(std::string(childList)); if(moves.empty()) return stand;
+        int baseQ = evaluate_white_minus_black_material(posFen);
+        for(const auto &mv: moves){
+#if !defined(__EMSCRIPTEN__) || defined(__EMSCRIPTEN_PTHREADS__)
+            if(g_search.cancel.load()) break;
+#endif
+            const char* nfC = apply_move_if_legal(posFen, mv.c_str(), optionsJson);
+            std::string nfStr = nfC ? std::string(nfC) : std::string(posFen);
+            int childE = evaluate_white_minus_black_material(nfStr.c_str());
+            bool isCap = (childE != baseQ);
+            if(!isCap) continue;
+            int score = qsearch_cb(nfStr.c_str(), depthLimit-1, alpha, beta);
+            if(score >= beta) return score;
+            if(score > alpha) alpha = score;
+        }
+        return alpha;
+    };
+    std::function<int(const char*, int, int, int)> maxsearch_cb = [&](const char* posFen, int depth, int alpha, int beta){
+#if !defined(__EMSCRIPTEN__) || defined(__EMSCRIPTEN_PTHREADS__)
+        if((depth > 0) && g_search.cancel.load()) return 0;
+#endif
+        if(depth<=0){ return qsearch_cb(posFen, 8, alpha, beta); }
+        int tte; std::string ttb; if(ttProbe(posFen, depth, tte, ttb)) return tte;
+        const char* childList = list_legal_moves(posFen, nullptr, optionsJson);
+        int stand = evaluate_white_minus_black_material(posFen);
+        if(!childList) return stand; std::vector<std::string> moves = extractUcis(std::string(childList)); if(moves.empty()) return stand;
+        int bestN = -10000000; std::string bestLocal;
+        for(const auto &mv: moves){
+#if !defined(__EMSCRIPTEN__) || defined(__EMSCRIPTEN_PTHREADS__)
+            if(g_search.cancel.load()) break;
+#endif
+            const char* nfC = apply_move_if_legal(posFen, mv.c_str(), optionsJson);
+            std::string nfStr = nfC ? std::string(nfC) : std::string(posFen);
+            int score = maxsearch_cb(nfStr.c_str(), depth-1, alpha, beta);
+            if(score > bestN){ bestN = score; bestLocal = mv; }
+            if(score > alpha) alpha = score;
+            if(alpha >= beta) break;
+        }
+        ttStore(posFen, depth, bestN, bestLocal); return bestN;
+    };
+
     std::ostringstream out; out << "{\"parent\":\"" << jsonEscape(fen?fen:"") << "\",\"depth\":"<< maxDepth << ",\"seed\":" << g_rng_seed.load() << ",\"children\":[";
     bool first=true; for(const auto &m: ucis){
         const char* nextFen = apply_move_if_legal(fen, m.c_str(), optionsJson);
         int childEval = evaluate_white_minus_black_material(nextFen ? nextFen : fen);
-        int agg = (maxDepth<=1)
-            ? ((side=='w') ? childEval : -childEval)
-            : -negamax(nextFen?nextFen:fen, maxDepth-1, true, -10000000, 10000000);
-        int imm = (side=='w') ? (childEval - baseEval) : -(childEval - baseEval);
+        int agg = colorblindSearch
+            ? ((maxDepth<=1) ? childEval : maxsearch_cb(nextFen?nextFen:fen, maxDepth-1, -10000000, 10000000))
+            : ((maxDepth<=1) ? ((side=='w') ? childEval : -childEval) : -negamax(nextFen?nextFen:fen, maxDepth-1, true, -10000000, 10000000));
+        int imm = (childEval - baseEval);
         if(!first) out<<","; first=false;
-        out << "{\"uci\":\""<< jsonEscape(m) << "\",\"agg\":"<< agg << ",\"imm\":"<< imm << ",\"nodes\":1,\"actualPlies\":"<< maxDepth << ",\"fen\":\""<< jsonEscape(nextFen?nextFen:"") << "\",\"pv\":[\""<< jsonEscape(m) << "\"]}";
+        out << "{\"uci\":\""<< jsonEscape(m) << "\",\"agg\":"<< agg << ",\"imm\":"<< imm << ",\"nodes\":1,\"actualPlies\":"<< maxDepth << ",\"fen\":\""<< jsonEscape(nextFen?nextFen:"") << "\",\"pv\":[\""<< jsonEscape(m) << "\"]";
+        if(dbgFlag){
+            out << ",\"dbg\":{\"rootSide\":\"" << (side=='w'?"w":"b") << "\",\"base\":" << (colorblindSearch ? baseEval : ((side=='w')? baseEval : -baseEval)) << ",\"childEval\":" << (colorblindSearch ? childEval : ((side=='w')? childEval : -childEval)) << "}";
+        }
+        out << "}";
     }
-    out << "],\"nodes\":" << ucis.size() << ",\"baseEval\":" << ((side=='w')? baseEval : -baseEval) << "}";
+    out << "],\"nodes\":" << ucis.size() << ",\"baseEval\":" << (colorblindSearch ? baseEval : ((side=='w')? baseEval : -baseEval)) << "}";
     g = out.str();
     return g.c_str();
 }

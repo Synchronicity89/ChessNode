@@ -148,8 +148,8 @@ static bool squareAttackedByBlack(const Board &bd, int r, int f){
     for(auto &d: KN){ int r2=r+d[0], f2=f+d[1]; if(r2>=0&&r2<8&&f2>=0&&f2<8){ if(bd.b[r2][f2]=='n') return true; }}
     // King
     for(int dr=-1; dr<=1; ++dr){ for(int df=-1; df<=1; ++df){ if(dr==0&&df==0) continue; int r2=r+dr, f2=f+df; if(r2>=0&&r2<8&&f2>=0&&f2<8){ if(bd.b[r2][f2]=='k') return true; } }}
-    // Black pawns attack downwards: king at (r,f) attacked by pawn at (r-1,f±1)
-    if(r-1>=0){ if(f-1>=0 && bd.b[r-1][f-1]=='p') return true; if(f+1<8 && bd.b[r-1][f+1]=='p') return true; }
+    // Black pawns attack downwards (toward increasing r): king at (r,f) attacked by pawn at (r+1,f±1)
+    if(r+1<8){ if(f-1>=0 && bd.b[r+1][f-1]=='p') return true; if(f+1<8 && bd.b[r+1][f+1]=='p') return true; }
     // Sliders: bishops/rooks/queens
     auto ray = [&](int dr,int df){ int r2=r+dr, f2=f+df; while(r2>=0&&r2<8&&f2>=0&&f2<8){ char t=bd.b[r2][f2]; if(t!='.'){ if(dr!=0 && df!=0){ if(t=='b'||t=='q') return true; } else { if(t=='r'||t=='q') return true; } return false; } r2+=dr; f2+=df; } return false; };
     if(ray(1,0)||ray(-1,0)||ray(0,1)||ray(0,-1)||ray(1,1)||ray(1,-1)||ray(-1,1)||ray(-1,-1)) return true;

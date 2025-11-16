@@ -85,16 +85,18 @@ static int evalBestScore(const std::string &fen, int depth){
 }
 
 int main(){
-    const std::string fen = "k7/PP6/8/8/8/p7/p7/K7 b - - 0 1";
-    const std::string flipped = flipFen(fen);
+    // Ensure engine always sees White to move: flip if original is black.
+    const std::string original = "k7/PP6/8/8/8/p7/p7/K7 b - - 0 1";
+    // Normalize to white-to-move for the query FEN
+    std::istringstream ss(original); std::string place, side, cast, ep, half, full; ss>>place>>side>>cast>>ep>>half>>full; bool isBlack = (!side.empty() && side[0]=='b');
+    const std::string fen = isBlack ? flipFen(original) : original;
     const int depths[] = {2,4,6,8};
     bool ok = true;
-    std::cout << "FEN:    " << fen << "\nFlip:   " << flipped << "\n";
+    std::cout << "FEN (white to move): " << fen << "\n";
     for(int d: depths){
         int s1 = evalBestScore(fen, d);
-        int s2 = evalBestScore(flipped, d);
-        std::cout << "Depth " << d << ": score(fen)=" << s1 << ", score(flip)=" << s2 << "\n";
-        if(s1 != 0 || s2 != 0) ok = false;
+        std::cout << "Depth " << d << ": score=" << s1 << "\n";
+        if(s1 != 0) ok = false;
     }
     if(!ok){ std::cerr << "Failure: non-zero evaluation detected." << std::endl; return 1; }
     std::cout << "All depths evaluated to 0 cp." << std::endl;

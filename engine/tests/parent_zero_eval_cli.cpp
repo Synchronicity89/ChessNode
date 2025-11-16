@@ -51,27 +51,20 @@ static bool extractBaseEval(const std::string &j, int &out){ return extractInt(j
 int main(){
     // Revised neutrality test FEN: kings only, no material change possible.
     // This should remain 0 evaluation at any search depth.
+    // White-to-move normalization (colorblind engine): provide only white-to-move FEN.
     const std::string fen = "7k/8/8/8/8/8/8/7K w - - 0 1";
-    const std::string flipped = flipFen(fen);
     const int depth = 20; // deep neutrality verification
     std::ostringstream opts; opts<<"{\"searchDepth\":"<<depth<<"}";
     const char* r1 = choose_best_move(fen.c_str(), opts.str().c_str());
     if(!r1){ std::cerr<<"Engine choose_best_move returned null (original)"<<std::endl; return 1; }
     std::string j1(r1); // copy immediately before second call overwrites static buffer
-    const char* r2 = choose_best_move(flipped.c_str(), opts.str().c_str());
-    if(!r2){ std::cerr<<"Engine choose_best_move returned null (flipped)"<<std::endl; return 1; }
-    std::string j2(r2);
-    std::cout << "Raw JSON original: " << j1 << "\n";
-    std::cout << "Raw JSON flipped:  " << j2 << "\n";
-    int best1=999999, best2=999999, base1=999999, base2=999999;
+    std::cout << "Raw JSON: " << j1 << "\n";
+    int best1=999999, base1=999999;
     bool ok=true;
     if(!extractBestScore(j1,best1)){ std::cerr<<"Parse fail best1"<<std::endl; ok=false; }
-    if(!extractBestScore(j2,best2)){ std::cerr<<"Parse fail best2"<<std::endl; ok=false; }
     if(!extractBaseEval(j1,base1)){ std::cerr<<"Parse fail base1"<<std::endl; ok=false; }
-    if(!extractBaseEval(j2,base2)){ std::cerr<<"Parse fail base2"<<std::endl; ok=false; }
-    std::cout<<"Position: "<<fen<<"\nFlipped:  "<<flipped<<"\nDepth: "<<depth<<"\n";
-    std::cout<<"Original baseEval="<<base1<<" best.score="<<best1<<"\n";
-    std::cout<<"Flipped  baseEval="<<base2<<" best.score="<<best2<<"\n";
-    if(base1!=0||base2!=0||best1!=0||best2!=0){ std::cerr<<"Failure: expected all evaluations == 0 cp"<<std::endl; ok=false; }
+    std::cout<<"Position: "<<fen<<"\nDepth: "<<depth<<"\n";
+    std::cout<<"baseEval="<<base1<<" best.score="<<best1<<"\n";
+    if(base1!=0||best1!=0){ std::cerr<<"Failure: expected zero evaluation"<<std::endl; ok=false; }
     return ok?0:1;
 }

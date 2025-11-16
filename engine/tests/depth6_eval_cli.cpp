@@ -60,9 +60,10 @@ int main(){
     int s1 = -10000000; for(int x: v1) if(x>s1) s1=x;
     int s2 = -10000000; for(int x: v2) if(x>s2) s2=x;
 
-    // Check symmetry: s1 ~= -s2 and both near zero (drawish). Allow +/- 100 cp tolerance.
-    int sym = s1 + s2; // should be ~0
-    if(sym < -100 || sym > 100){ std::cerr << "FAIL: symmetry mismatch at depth 6: s1="<<s1<<" s2="<<s2<<" sum="<<sym<<"\n"; return 1; }
+    // Colorblind engine: aggregated scores are white-centric. Under flip symmetry, values should match.
+    // Check closeness |s1 - s2| <= 100 and drawish magnitude near 0.
+    int diff = s1 - s2; // should be ~0
+    if(diff < -100 || diff > 100){ std::cerr << "FAIL: symmetry mismatch at depth 6: s1="<<s1<<" s2="<<s2<<" diff="<<diff<<"\n"; return 1; }
     if(s1 < -150 || s1 > 150){ std::cerr << "FAIL: drawish magnitude too large: s1="<<s1<<"\n"; return 1; }
     std::cout << "PASS: depth6 drawish symmetry ok: s1="<<s1<<" s2="<<s2<<"\n"; return 0;
 }

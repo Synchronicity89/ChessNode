@@ -1,162 +1,782 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chess Play</title>
-  <link rel="stylesheet" href="css/style.css">
+  <title>Chess Engine Minimal UI</title>
   <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+  <script src="engine-bridge2.js"></script>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    header {
+      padding: 8px 12px;
+      background: #222;
+      color: #fff;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    .board-area {
+      flex: 0 0 auto;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .board {
+      border: 2px solid #333;
+      display: grid;
+      grid-template-columns: repeat(8, 64px);
+      grid-template-rows: repeat(8, 64px);
+      transform-origin: center center;
+    }
+
+    .square {
+      width: 64px;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+    }
+
+    .light {
+      background: #f0d9b5;
+    }
+
+    .dark {
+      background: #b58863;
+    }
+
+    .square.selected {
+      outline: 3px solid #2c7;
+    }
+
+    .panel {
+      flex: 1 1 auto;
+      padding: 8px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow: auto;
+      font-size: 13px;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .controls label {
+      font-size: 12px;
+    }
+
+    textarea {
+      width: 100%;
+      box-sizing: border-box;
+      font-family: monospace;
+      font-size: 12px;
+    }
+
+    #log {
+      flex: 1 1 auto;
+      border: 1px solid #ccc;
+      padding: 4px;
+      overflow: auto;
+      background: #fafafa;
+    }
+
+    #pgn {
+      height: 80px;
+    }
+
+    #engineIO {
+      height: 80px;
+    }
+
+    button {
+      font-size: 12px;
+      padding: 4px 8px;
+    }
+
+    .row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .mono {
+      font-family: monospace;
+    }
+  </style>
 </head>
+
 <body>
   <header>
-    <h1>Chess Play</h1>
-    <nav>
-      <a href="index.html">Play</a>
-      <a href="engine-config.html">Config</a>
-      <a href="engine-explorer.html">Explorer</a>
-      <a href="engine-dev.html">Dev</a>
-    </nav>
+    <div>Chess Engine Minimal UI</div>
+    <div>Engine side: <span id="engineSideLabel" class="mono">white (internal)</span> | Human side: <span
+        id="humanSideLabel" class="mono">black (presentation)</span></div>
   </header>
-  <main class="layout" data-requires-wasm>
-    <section class="board-panel">
-      <div id="board" class="board-placeholder">Board will render here</div>
-      <div class="controls">
-        <button id="newGame" class="primary" title="Stops any running search and starts a new game search">New Game</button>
-        <button id="endGame" title="Stops searching without starting a new search">End Game</button>
-        <label>
-          Side:
-          <select id="sideSelect">
-            <option value="white">White</option>
-            <option value="black">Black</option>
-            <option value="observe">Observe (Engine vs Engine)</option>
-          </select>
-        </label>
-        <label>
-          Depth:
-          <input id="depth" type="number" value="6" min="1" max="99" />
-        </label>
-        <label>
-          Show PV <input id="showPv" type="checkbox" checked>
-        </label>
-        <label>
-          Hide Board (Fast) <input id="hideBoard" type="checkbox">
-        </label>
-        <div class="row" style="margin-top:8px; gap:6px; display:flex; flex-wrap:wrap; align-items:center;">
-          <label style="flex:1 1 320px;">
-            FEN:
-            <input id="fenInputBoard" type="text" placeholder="Paste FEN here" style="width:100%; font-family:monospace;">
-          </label>
-          <button id="btnLoadFenBoard" title="Load FEN to board and make it engine's turn">Load FEN → Move</button>
-          <button id="btnFlipFenBoard" title="Flip FEN (rotate 180° + swap colors) into the textbox">Flip FEN</button>
-          <button id="btnSelfPlay" title="Engine self-play loop with dev 5-move draw rule">Self-Play</button>
-        </div>
+  <main>
+    <section class="board-area">
+      <div style="margin-bottom:6px; font-size:12px;">Board (bottom: human as black)</div>
+      <div id="board" class="board"></div>
+      <div class="row" style="margin-top:8px;">
+        <button id="btnNewGame">New Game</button>
+        <button id="btnFlip">Flip Board</button>
+        <button id="btnEngineMove">Engine Move</button>
       </div>
     </section>
-    <section class="sidebar" data-requires-wasm>
-      <h2>Moves</h2>
-      <ol id="moveList"></ol>
-      <h2>Score</h2>
-      <div id="score">--</div>
-  <div id="engineStatusRow">Engine: <span id="engineStatus">detecting…</span> | Search: <span id="searchState" class="search-dot search-paused">paused</span></div>
-    <h2>Activity</h2>
-    <div id="activityLog" aria-live="polite"></div>
-    <h2>Position (FEN)</h2>
-    <textarea id="fenDisplay" readonly style="width:100%;height:60px;font-family:monospace;"></textarea>
-      <h2>Evaluation</h2>
-      <div id="evalControls">
-        <h3>Opponent model</h3>
-        <div class="row">
-          <label>Opponent ply depth <input id="opp_ply_depth" type="number" value="4" min="0" max="64"></label>
-          <label>Trade ply equivalent <input id="trade_ply_eq" type="number" value="0.5" step="0.1" min="0" max="1"></label>
-        </div>
-
-        <div class="row"><label>P <input id="w_p" type="number" value="100" step="10"></label>
-          <label>N <input id="w_n" type="number" value="300" step="10"></label>
-          <label>B <input id="w_b" type="number" value="300" step="10"></label></div>
-        <div class="row"><label>R <input id="w_r" type="number" value="500" step="10"></label>
-          <label>Q <input id="w_q" type="number" value="900" step="10"></label>
-          <label>K <input id="w_k" type="number" value="0" step="10"></label></div>
-        <div class="row"><label><input id="t_material" type="checkbox" checked> Material</label>
-          <label><input id="t_tempo" type="checkbox"> Tempo</label>
-          <label>Tempo cp <input id="tempo_cp" type="number" value="10" step="1"></label></div>
-
-        <h3>Risk model</h3>
-        <div class="row">
-          <label>Risk type
-            <select id="risk_type">
-              <option value="exponential">Exponential</option>
-              <option value="logistic">Logistic</option>
-            </select>
-          </label>
-          <label>kAt2x <input id="risk_k2x" type="number" value="100" step="1" min="1"></label>
-          <label>Logistic slope <input id="risk_slope" type="number" value="5" step="0.5"></label>
-          <label>Logistic midpoint xD <input id="risk_mid" type="number" value="1.0" step="0.1"></label>
-        </div>
-        <div class="row">
-          <label>riskPow <input id="risk_pow" type="number" value="1.0" step="0.1"></label>
-          <label>gainScale <input id="gain_scale" type="number" value="1.0" step="0.1"></label>
-          <label>lossScale <input id="loss_scale" type="number" value="1.0" step="0.1"></label>
-          <label>blendAlpha <input id="blend_alpha" type="number" value="1.0" step="0.1" min="0" max="1"></label>
-        </div>
-
-        <h3>Board geometry</h3>
-        <div class="row">
-          <label>Center placement reward <input id="center_reward" type="number" value="50" step="5"></label>
-          <label>King center magnet <input id="king_center_mag" type="number" value="15" step="1"></label>
-        </div>
-
-        <h3>Castling / King</h3>
-        <div class="row">
-          <label>Castle K-side reward <input id="castle_k_reward" type="number" value="60" step="5"></label>
-          <label>Castle Q-side reward <input id="castle_q_reward" type="number" value="60" step="5"></label>
-          <label>King non-castle penalty <input id="king_noncastle_pen" type="number" value="100" step="5"></label>
-        </div>
-
-        <h3>Development</h3>
-        <div class="row">
-          <label>Rank attack factor <input id="rank_attack_factor" type="number" value="1.1" step="0.05"></label>
-          <label>Development incentive <input id="dev_incentive" type="number" value="10" step="1"></label>
-          <label><input id="threat_occupied" type="checkbox" checked> Count threatened occupied squares</label>
-        </div>
-
-        <h3>King and mate values</h3>
-        <div class="row">
-          <label>King (engine) cp <input id="king_engine_cp" type="number" value="7000" step="100"></label>
-          <label>King (opponent) cp <input id="king_opponent_cp" type="number" value="5000" step="100"></label>
-        </div>
-
-        <details>
-          <summary>Advanced (per-operation knobs)</summary>
-          <div class="row">
-            <label>Development gamma <input id="dev_gamma" type="number" value="1.0" step="0.1"></label>
-            <label>Endgamishness pow <input id="endg_pow" type="number" value="1.0" step="0.1"></label>
-            <label>King-center improvement pow <input id="kc_imp_pow" type="number" value="1.0" step="0.1"></label>
-          </div>
-          <div class="row">
-            <label>Mix weight center <input id="mix_w_center" type="number" value="1.0" step="0.1"></label>
-            <label>Mix weight king-center <input id="mix_w_kcenter" type="number" value="1.0" step="0.1"></label>
-            <label>Mix weight development <input id="mix_w_dev" type="number" value="1.0" step="0.1"></label>
-            <label>Mix weight risk <input id="mix_w_risk" type="number" value="1.0" step="0.1"></label>
-          </div>
-        </details>
-        <div class="row">
-          <button id="saveEval">Save Eval Settings</button>
-          <button id="applyEval">Apply Now</button>
-        </div>
+    <section class="panel">
+      <div class="controls">
+        <label>Depth <input id="depth" type="number" value="2" min="1" max="12" style="width:48px;"></label>
+        <label>FEN <input id="fenInput" type="text" style="width:260px;" class="mono"
+            placeholder="Optional: paste FEN then New Game"></label>
       </div>
-      <div class="io">
-        <button id="savePgn" data-pages-incompatible title="Saves to local file (not available on static host)">Save PGN</button>
-        <button id="loadPgn" data-pages-incompatible title="Loads from local file (not available on static host)">Load PGN</button>
-        <button id="loadFen">Load FEN</button>
-        <textarea id="ioText" placeholder="PGN or FEN here"></textarea>
+      <div>
+        <strong>Current Board FEN</strong>
+        <input id="fenCurrent" type="text" class="mono" style="width:100%;" readonly>
+      </div>
+      <div class="row"><strong>Score:</strong> <span id="score" class="mono">--</span></div>
+      <div>
+        <strong>PGN</strong>
+        <textarea id="pgn" readonly></textarea>
+      </div>
+      <div>
+        <strong>Engine I/O (unflipped & flipped)</strong>
+        <textarea id="engineIO" readonly></textarea>
+      </div>
+      <div>
+        <strong>Log</strong>
+        <div id="log"></div>
+      </div>
+      <div>
+        <strong>Engine bridge source</strong>
+        <div>
+          <a id="engineBridgeLink" href="engine-bridge2.js" target="_blank">Open engine-bridge2.js</a>
+        </div>
       </div>
     </section>
   </main>
-  <script src="js/host-capabilities.js"></script>
-  <script src="js/ui-id-hint.js"></script>
-  <script src="js/ui-engine-bridge.js"></script>
-  <script src="js/ui-eval-config.js"></script>
-  <script src="js/ui-config.js"></script>
-  <script src="js/ui-board.js"></script>
+  <script>
+    const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+    const PIECE_IMAGES = {
+      'P': 'img/white-pawn.png',
+      'N': 'img/white-knight.png',
+      'B': 'img/white-bishop.png',
+      'R': 'img/white-rook.png',
+      'Q': 'img/white-queen.png',
+      'K': 'img/white-king.png',
+      'p': 'img/black-pawn.png',
+      'n': 'img/black-knight.png',
+      'b': 'img/black-bishop.png',
+      'r': 'img/black-rook.png',
+      'q': 'img/black-queen.png',
+      'k': 'img/black-king.png'
+    };
+
+    let currentFen = START_FEN; // legacy references for existing code paths
+    let boardStateFen = START_FEN; // authoritative board state
+    let engineIsWhite = true; // set to false to depict engine playing black (communication flipped)
+    let humanIsBlack = true; // updated in newGame based on engineIsWhite
+    let boardFlipped = true; // visual orientation (bottom side is human)
+    let gameMoves = [];
+    let debugLogging = false;
+    let selectedSquare = null; // algebraic like 'e2'
+    let sideToMove = 'w'; // updated from boardStateFen
+
+    function updateBoardState(newFen) {
+      boardStateFen = newFen;
+      currentFen = newFen; // keep older code functional
+      syncSideToMoveFromFen();
+      renderBoard();
+      engineEvaluateFen();
+      const $fenCur = $('#fenCurrent');
+      if ($fenCur.length) $fenCur.val(boardStateFen);
+    }
+    
+    function isBoardRotated() {
+      return !!boardFlipped;
+    }
+
+    function syncSideToMoveFromFen() {
+      const parts = (boardStateFen || '').split(' ');
+      if (parts.length > 1 && (parts[1] === 'w' || parts[1] === 'b')) {
+        sideToMove = parts[1];
+      }
+    }
+
+    function debugCall(name) {
+      if (!debugLogging) return;
+      console.log('[debug] call:', name);
+    }
+
+    function logLine(msg) {
+      debugCall('logLine');
+      const $log = $('#log');
+      if (!$log.length) return;
+
+      const ts = new Date().toISOString().substr(11, 8);
+      $('<div>').text('[' + ts + '] ' + msg).appendTo($log);
+      $log.scrollTop($log.prop('scrollHeight'));
+    }
+
+    function setEngineIO(text) {
+      debugCall('setEngineIO');
+      const $box = $('#engineIO');
+      if (!$box.length) return;
+
+      $box.val(text);
+      $box.scrollTop($box.prop('scrollHeight'));
+    }
+
+    function updatePgnBox() {
+      debugCall('updatePgnBox');
+      const $box = $('#pgn');
+      if (!$box.length) return;
+
+      let res = '';
+      for (let i = 0; i < gameMoves.length; i += 2) {
+        const moveNumber = 1 + (i / 2);
+        const whiteMove = gameMoves[i] || '';
+        const blackMove = gameMoves[i + 1] || '';
+
+        res += moveNumber + '. ' + whiteMove;
+        if (blackMove) {
+          res += ' ' + blackMove;
+        }
+        if (i + 2 < gameMoves.length) {
+          res += ' ';
+        }
+      }
+
+      $box.val(res.trim());
+    }
+
+    function parseBoardArray(fen) {
+      debugCall('parseBoardArray');
+      const boardPart = (fen || '').split(' ')[0] || '';
+      const rows = boardPart.split('/');
+      const grid = Array.from({ length: 8 }, () => Array(8).fill('.'));
+
+      for (let r = 0; r < 8 && r < rows.length; r++) {
+        let c = 0;
+        for (const ch of rows[r]) {
+          if (/^[1-8]$/.test(ch)) {
+            c += parseInt(ch, 10);
+          } else {
+            if (c < 8) grid[r][c++] = ch;
+          }
+        }
+      }
+
+      return grid;
+    }
+
+    function flipFenString(fen) {
+      debugCall('flipFenString');
+      try {
+        const parts = (fen || '').trim().split(/\s+/);
+        if (parts.length < 6) return fen;
+
+        const placement = parts[0];
+        const side = parts[1];
+        const cast = parts[2];
+        const ep = parts[3];
+        const half = parts[4];
+        const full = parts[5];
+
+        const ranks = placement.split('/');
+        if (ranks.length !== 8) return fen;
+
+        const squares = new Array(64).fill('.');
+        for (let r = 0; r < 8; r++) {
+          let file = 0;
+          for (const ch of ranks[r]) {
+            if (/^[1-8]$/.test(ch)) {
+              const n = parseInt(ch, 10);
+              for (let k = 0; k < n; k++) {
+                squares[r * 8 + file] = '.';
+                file++;
+              }
+            } else {
+              squares[r * 8 + file] = ch;
+              file++;
+            }
+          }
+          if (file !== 8) return fen;
+        }
+
+        const out = new Array(64).fill('.');
+        for (let i = 0; i < 64; i++) {
+          let p = squares[i];
+          const j = 63 - i;
+          if (p !== '.') {
+            const upper = p.toUpperCase();
+            const lower = p.toLowerCase();
+            p = (p === upper) ? lower : upper;
+          }
+          out[j] = p;
+        }
+
+        const rowsOut = [];
+        for (let r = 0; r < 8; r++) {
+          let row = '';
+          let empty = 0;
+          for (let c = 0; c < 8; c++) {
+            const p = out[r * 8 + c];
+            if (p === '.') {
+              empty++;
+            } else {
+              if (empty) {
+                row += String(empty);
+                empty = 0;
+              }
+              row += p;
+            }
+          }
+          if (empty) row += String(empty);
+          rowsOut.push(row);
+        }
+
+        const newPlacement = rowsOut.join('/');
+        const newSide = (side === 'w') ? 'b' : 'w';
+
+        const has = { K: false, Q: false, k: false, q: false };
+        for (const ch of (cast || '')) {
+          if (has.hasOwnProperty(ch)) has[ch] = true;
+        }
+        const newCast = (has.k ? 'K' : '') + (has.q ? 'Q' : '') + (has.K ? 'k' : '') + (has.Q ? 'q' : '');
+        const castOut = newCast || '-';
+
+        let epOut = '-';
+        if (ep && ep.length === 2 && /^[a-h][1-8]$/.test(ep)) {
+          const f = ep.charCodeAt(0) - 97;
+          const r = ep.charCodeAt(1) - 49;
+          const nf = 7 - f;
+          const nr = 7 - r;
+          epOut = String.fromCharCode(97 + nf) + String.fromCharCode(49 + nr);
+        }
+
+        return `${newPlacement} ${newSide} ${castOut} ${epOut} ${half} ${full}`;
+      } catch {
+        return fen;
+      }
+    }
+
+    function flipSquare180(alg) {
+      debugCall('flipSquare180');
+      if (!alg || alg.length !== 2) return alg;
+      const f = alg.charCodeAt(0) - 97;
+      const r = alg.charCodeAt(1) - 49;
+      if (f < 0 || f > 7 || r < 0 || r > 7) return alg;
+      const nf = 7 - f;
+      const nr = 7 - r;
+      return String.fromCharCode(97 + nf) + String.fromCharCode(49 + nr);
+    }
+
+    function flipMoveUci180(uci) {
+      debugCall('flipMoveUci180');
+      if (!uci || uci.length < 4) return uci;
+      const from = uci.slice(0, 2);
+      const to = uci.slice(2, 4);
+      const promo = uci.length > 4 ? uci.slice(4) : '';
+      return flipSquare180(from) + flipSquare180(to) + promo;
+    }
+
+    function renderBoard() {
+      debugCall('renderBoard');
+
+      const $board = $('#board');
+      if (!$board.length) return;
+
+      $board.empty();
+      $board.css('transform', boardFlipped ? 'rotate(180deg)' : 'none');
+      // Expose current rotation for tests and debugging: '0' or '180'.
+      $board.attr('data-rotated', boardFlipped ? '180' : '0');
+
+      const grid = parseBoardArray(currentFen);
+
+      for (let r = 0; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+          const $div = $('<div class="square">');
+          $div.addClass(((r + c) % 2) ? 'dark' : 'light');
+
+          // Map visual square to algebraic (taking boardFlipped into account)
+          const fileIdx = boardFlipped ? 7 - c : c;
+          const rankIdx = boardFlipped ? r : 7 - r;
+          const fileChar = String.fromCharCode(97 + fileIdx);
+          const rankChar = String.fromCharCode(49 + rankIdx);
+          const sq = fileChar + rankChar;
+          $div.data('sq', sq);
+
+          if (selectedSquare === sq) {
+            $div.addClass('selected');
+          }
+
+          const piece = grid[r][c];
+          if (piece && piece !== '.') {
+            const isWhite = (piece === piece.toUpperCase());
+            const $img = $('<img>', {
+              src: PIECE_IMAGES[piece] || '',
+              alt: piece
+            }).css({
+              width: '56px',
+              height: '56px'
+            }).prop('draggable', false);
+            // Expose test-friendly attributes so headless tests can
+            // easily introspect the board state.
+            $div.attr('data-piece', piece);
+            $div.attr('data-color', isWhite ? 'white' : 'black');
+            $div.append($img);
+          } else {
+            // Ensure empty squares do not carry stale metadata
+            $div.removeAttr('data-piece');
+            $div.removeAttr('data-color');
+          }
+
+          $board.append($div);
+        }
+      }
+    }
+
+    function simpleSanFromUci(uci) {
+      debugCall('simpleSanFromUci');
+      if (!uci || uci.length < 4) return uci || '';
+      return uci;
+    }
+
+    function updateScore(cp) {
+      debugCall('updateScore');
+
+      const $score = $('#score');
+      if (!$score.length) return;
+
+      if (cp === null || cp === undefined) {
+        $score.text('--');
+        return;
+      }
+
+      const pawns = (cp / 100).toFixed(2);
+      $score.text((cp >= 0 ? '+' : '') + pawns);
+    }
+
+    function engineEvaluateFen() {
+      debugCall('engineEvaluateFen');
+      if (!window.EngineBridge) return;
+      let cp = null;
+      if (window.EngineBridge.evaluateFEN) {
+        cp = window.EngineBridge.evaluateFEN(boardStateFen);
+      }
+      updateScore(cp);
+
+      // Also keep Engine I/O box roughly in sync after arbitrary FEN changes
+      let ioText = '';
+      ioText += 'fen (original board): ' + boardStateFen + '\n';
+      ioText += '\n[explain.math]\n';
+      ioText += 'Stub evaluation: material-only score ' + (cp !== null ? cp + ' cp' : 'n/a') + '.\n';
+      setEngineIO(ioText);
+    }
+
+    function engineChooseBestMove() {
+      debugCall('engineChooseBestMove');
+      if (!window.EngineBridge || !window.EngineBridge.chooseBestMove) {
+        logLine('Engine chooseBestMove not available');
+        return;
+      }
+
+      const depth = parseInt($('#depth').val(), 10) || 2;
+      const optsJson = JSON.stringify({ searchDepth: depth });
+      const stm = boardStateFen.split(' ')[1];
+      // Turn validation depending on engine color
+      if (engineIsWhite && stm !== 'w') {
+        logLine('ERROR: Engine Move pressed but it is not white to move.');
+        return;
+      }
+      if (!engineIsWhite && stm !== 'b') {
+        logLine('ERROR: Engine Move pressed but it is not black to move.');
+        return;
+      }
+      const flipComm = !engineIsWhite; // flip inbound/outbound when engine plays black
+      const fenForEngine = flipComm ? flipFenString(boardStateFen) : boardStateFen;
+
+      logLine('ENGINE (white) MOVE REQUEST: chooseBestMove');
+      logLine('  fen (board->engine): ' + fenForEngine);
+      logLine('  options: ' + optsJson);
+
+      const t0 = performance.now();
+      const res = window.EngineBridge.chooseBestMove(fenForEngine, optsJson);
+      const t1 = performance.now();
+
+      if (!res) {
+        logLine('ENGINE ERROR: null response from chooseBestMove');
+        return;
+      }
+
+      logLine('ENGINE RESPONSE RAW: ' + res);
+
+      let obj = null;
+      try {
+        obj = JSON.parse(res);
+      } catch (e) {
+        logLine('ENGINE PARSE ERROR: ' + e);
+        return;
+      }
+
+      let engineUci = obj && obj.best && obj.best.uci ? obj.best.uci : null;
+      if (!engineUci) {
+        logLine('ENGINE RESULT: missing best.uci');
+        return;
+      }
+      // If communication flipped (engine playing black), flip move back to board space
+      const boardUci = flipComm ? flipMoveUci180(engineUci) : engineUci;
+
+      let ioText = '';
+      ioText += 'fen (original board): ' + boardStateFen + '\n';
+      ioText += 'fen sent to engine : ' + fenForEngine + '\n';
+      ioText += 'engine best uci    : ' + engineUci + '\n';
+      ioText += 'board-applied uci  : ' + boardUci + '\n';
+      if (obj.explain && obj.explain.math) {
+        ioText += '\n[explain.math]\n' + obj.explain.math + '\n';
+      }
+      setEngineIO(ioText);
+
+      const nodesInfo = (typeof obj.nodesTotal === 'number') ? ', nodes=' + obj.nodesTotal : '';
+      const depthInfo = (typeof obj.depth === 'number') ? ', depth=' + obj.depth : '';
+      const scoreInfo = (obj.best && typeof obj.best.score === 'number') ? ', score=' + obj.best.score + ' cp' : '';
+      logLine('ENGINE (white) RESULT: best=' + engineUci + ' (board=' + boardUci + ')' + scoreInfo + depthInfo + nodesInfo + ' in ' + (t1 - t0).toFixed(1) + ' ms');
+
+      const nextFen = fenApplyUciMove(boardStateFen, boardUci);
+      if (!nextFen) {
+        logLine('ENGINE MOVE APPLY FAILED for uci=' + boardUci);
+        return;
+      }
+      updateBoardState(nextFen);
+
+      const san = simpleSanFromUci(boardUci);
+      if (engineIsWhite) {
+        gameMoves.push(san);
+      } else {
+        if (gameMoves.length === 0) {
+          gameMoves.push('... ' + san);
+        } else {
+          gameMoves[gameMoves.length - 1] += ' ' + san;
+        }
+      }
+      updatePgnBox();
+    }
+
+    function tryHumanMove(fromSq, toSq) {
+      debugCall('tryHumanMove');
+      if (!fromSq || !toSq || fromSq === toSq) return;
+      syncSideToMoveFromFen();
+      const humanColor = engineIsWhite ? 'b' : 'w';
+      if (sideToMove !== humanColor) {
+        logLine('Human move ignored: not ' + (humanColor === 'w' ? 'white' : 'black') + " to move.");
+        return;
+      }
+      let uciPresentation = fromSq + toSq; // based on displayed labels attached to squares
+      // When the board is rotated (black bottom), the displayed coordinates are flipped.
+      // Convert presentation-space UCI to board-space UCI before applying to FEN.
+      let uci = isBoardRotated() ? flipMoveUci180(uciPresentation) : uciPresentation;
+      logLine('HUMAN (' + (humanColor === 'w' ? 'white' : 'black') + ') MOVE REQUEST: ' + uciPresentation + (isBoardRotated() ? (' (board=' + uci + ')') : ''));
+      const nextFen = fenApplyUciMove(boardStateFen, uci);
+      if (!nextFen) {
+        logLine('HUMAN MOVE APPLY FAILED for uci=' + uci);
+        return;
+      }
+      updateBoardState(nextFen);
+      selectedSquare = null;
+      const san = simpleSanFromUci(uci);
+      if (engineIsWhite) {
+        // human is black
+        if (gameMoves.length === 0) {
+          gameMoves.push('... ' + san);
+        } else {
+          gameMoves[gameMoves.length - 1] += ' ' + san;
+        }
+      } else {
+        // human is white
+        gameMoves.push(san);
+      }
+      updatePgnBox();
+    }
+
+    function newGame() {
+      debugCall('newGame');
+
+      const fenText = ($('#fenInput').val() || '').toString().trim() || START_FEN;
+      boardFlipped = engineIsWhite; // bottom side is human color
+      humanIsBlack = engineIsWhite; // if engine plays black, human is white
+      gameMoves = [];
+      $('#humanSideLabel').text(engineIsWhite ? 'black (presentation)' : 'white (presentation)');
+
+      selectedSquare = null;
+      updateBoardState(fenText);
+      updatePgnBox();
+      setEngineIO('');
+
+      const $imgs = $('#board img');
+      if ($imgs.length === 0) {
+        console.error('New Game: renderBoard completed but no piece images were found under #board.');
+        console.error('Check that PIECE_IMAGES paths are correct and that currentFen has pieces in the placement field.');
+      }
+
+      logLine('New game started. Engine plays ' + (engineIsWhite ? 'white' : 'black') + '; human plays ' + (engineIsWhite ? 'black' : 'white') + ' at bottom.');
+    }
+
+    function flipBoardOnly() {
+      debugCall('flipBoardOnly');
+      boardFlipped = !boardFlipped;
+      renderBoard();
+      logLine('Board visual flipped 180 degrees.');
+    }
+
+    function init() {
+      debugCall('init');
+
+      if (window.EngineBridge && window.EngineBridge.setRandomSeed) {
+        try {
+          window.EngineBridge.setRandomSeed(12345);
+          logLine('Engine RNG seed set to 12345');
+        } catch {
+        }
+      }
+
+      $('#btnNewGame').on('click', function () {
+        debugCall('btnNewGame.click');
+        newGame();
+      });
+      $('#btnFlip').on('click', function () {
+        debugCall('btnFlip.click');
+        flipBoardOnly();
+      });
+      $('#btnEngineMove').on('click', function () {
+        debugCall('btnEngineMove.click');
+        engineChooseBestMove();
+      });
+
+      // Click-to-move handler for human moves
+      $('#board').on('click', '.square', function () {
+        debugCall('board.square.click');
+        const sq = $(this).data('sq');
+        if (!sq) return;
+
+        if (!selectedSquare) {
+          selectedSquare = sq;
+          renderBoard();
+        } else {
+          const fromSq = selectedSquare;
+          const toSq = sq;
+          selectedSquare = null;
+          tryHumanMove(fromSq, toSq);
+        }
+      });
+
+      newGame();
+    }
+
+    $(function () {
+      const params = new URLSearchParams(window.location.search);
+      debugLogging = params.get('debug') === 'true';
+      if (debugLogging) {
+        console.log('[debug] query param debug=true detected; enabling call logging');
+      }
+
+      debugCall('document.ready');
+
+      // Basic runtime checks that required assets and APIs are present.
+      const missing = [];
+
+      // Check that engine-bridge2.js is reachable.
+      $.ajax({
+        url: 'engine-bridge2.js',
+        method: 'HEAD'
+      }).fail(function () {
+        missing.push('engine-bridge2.js (bridge JS file not found)');
+        console.error('Asset check: engine-bridge2.js is not reachable from this page.');
+      }).always(function () {
+        // After the HEAD completes, do additional checks.
+        const hasEngineBridge = !!window.EngineBridge;
+        if (!hasEngineBridge) {
+          missing.push('window.EngineBridge (bridge object not defined)');
+          console.error('Asset check: window.EngineBridge is not defined.');
+        }
+
+        const hasWasmModule = hasEngineBridge && !!window.EngineBridge.wasmModule;
+        if (!hasWasmModule) {
+          console.warn('Asset check: EngineBridge.wasmModule is missing; WASM may not be loaded yet.');
+        }
+
+        if (missing.length) {
+          logLine('ASSET CHECK FAILED: ' + missing.join('; '));
+        } else {
+          logLine('ASSET CHECK OK: engine bridge JS reachable; EngineBridge object present.');
+        }
+      });
+
+      if (window.EngineBridge && window.EngineBridge.wasmReady) {
+        init();
+      } else {
+        $(window).one('engine-bridge-ready', function () {
+          debugCall('engine-bridge-ready');
+          init();
+        });
+      }
+    });
+
+    // General-purpose FEN move applier (basic: no legality, no captures accounting beyond placement change)
+    function fenApplyUciMove(fen, uci) {
+      try {
+        if (!fen || !uci || uci.length < 4) return null;
+        const parts = fen.trim().split(/\s+/);
+        if (parts.length < 6) return null;
+        const placement = parts[0];
+        const side = parts[1];
+        const cast = parts[2];
+        const ep = parts[3];
+        const half = parts[4];
+        let full = parseInt(parts[5], 10) || 1;
+        const from = uci.slice(0,2);
+        const to = uci.slice(2,4);
+        const promo = uci.length > 4 ? uci.slice(4) : '';
+        function sqToCoords(sq){ if(!sq||sq.length!==2) return null; const f=sq.charCodeAt(0)-97; const r=sq.charCodeAt(1)-49; if(f<0||f>7||r<0||r>7) return null; return {r:7-r,c:f}; }
+        function parseBoard(p){ const ranks=p.split('/'); const b=Array.from({length:8},()=>Array(8).fill('.')); for(let rr=0; rr<8; rr++){ let cc=0; for(const ch of ranks[rr]){ if(/^[1-8]$/.test(ch)){ cc+=parseInt(ch,10);} else { if(cc<8) b[rr][cc++]=ch; } } } return b; }
+        function encodeBoard(b){ const out=[]; for(let rr=0; rr<8; rr++){ let row=''; let empty=0; for(let cc=0; cc<8; cc++){ const p=b[rr][cc]; if(p==='.') empty++; else { if(empty){ row+=String(empty); empty=0;} row+=p; } } if(empty) row+=String(empty); out.push(row);} return out.join('/'); }
+        const board=parseBoard(placement);
+        const fromC=sqToCoords(from); const toC=sqToCoords(to);
+        if(!fromC||!toC) return null;
+        const piece=board[fromC.r][fromC.c]; if(piece==='.') return null;
+        board[toC.r][toC.c]= promo ? (side==='w'?promo.toUpperCase():promo.toLowerCase()): piece;
+        board[fromC.r][fromC.c]='.';
+        const newPlacement=encodeBoard(board);
+        const newSide = side==='w' ? 'b':'w';
+        if(side==='b') full += 1; // increment after black move
+        return `${newPlacement} ${newSide} ${cast} - ${half} ${full}`;
+      } catch(e){ logLine('fenApplyUciMove error: '+e); return null; }
+    }
+  </script>
 </body>
+
 </html>

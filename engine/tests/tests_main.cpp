@@ -239,17 +239,40 @@ static bool json_contains(const char* json, const char* needle){
     if (!json || !needle) return false; std::string s(json); return s.find(needle) != std::string::npos;
 }
 
+// --- Helpers for flip and UCI transformation (color + 180° rotation) ---
+static std::string rotateAndSwap_U(const std::string &placement){
+    std::vector<char> squares(64,'.'); std::vector<std::string> ranks; std::string tmp; for(char ch: placement){ if(ch=='/'){ ranks.push_back(tmp); tmp.clear(); } else tmp.push_back(ch); } ranks.push_back(tmp);
+    if(ranks.size()!=8) return std::string();
+    for(int r=0;r<8;r++){ int f=0; for(char ch: ranks[r]){ if(std::isdigit((unsigned char)ch)){ int n=ch-'0'; for(int k=0;k<n;k++){ squares[r*8+f]='.'; f++; } } else { squares[r*8+f]=ch; f++; } } if(f!=8) return std::string(); }
+    std::vector<char> out(64,'.'); for(int i=0;i<64;i++){ char p=squares[i]; int j=63-i; if(p!='.'){ p = std::isupper((unsigned char)p) ? (char)std::tolower((unsigned char)p) : (char)std::toupper((unsigned char)p); } out[j]=p; }
+    std::string res; for(int r=0;r<8;r++){ int empty=0; for(int c=0;c<8;c++){ char p=out[r*8+c]; if(p=='.'){ empty++; } else { if(empty){ res+=char('0'+empty); empty=0; } res+=p; } } if(empty) res+=char('0'+empty); if(r!=7) res+='/'; }
+    return res;
+}
+static inline char flipSideU(char s){ return s=='w'?'b':'w'; }
+static std::string flipCastU(const std::string &c){ if(c=="-") return c; bool wK=false,wQ=false,bK=false,bQ=false; for(char ch: c){ if(ch=='K') bK=true; else if(ch=='Q') bQ=true; else if(ch=='k') wK=true; else if(ch=='q') wQ=true; } std::string out; if(wK) out+='K'; if(wQ) out+='Q'; if(bK) out+='k'; if(bQ) out+='q'; if(out.empty()) out="-"; return out; }
+static std::string flipEPU(const std::string &ep){ if(ep.size()!=2) return std::string("-"); char f=ep[0], r=ep[1]; if(f<'a'||f>'h'||r<'1'||r>'8') return std::string("-"); int fi=f-'a', ri=r-'1'; int nfi=7-fi, nri=7-ri; return std::string()+char('a'+nfi)+char('1'+nri); }
+static std::string flipFenU(const std::string &fen){ std::istringstream ss(fen); std::string p,s,c,e,h,fn; if(!(ss>>p>>s>>c>>e>>h>>fn)) return std::string(); std::string np=rotateAndSwap_U(p); if(np.empty()) return std::string(); std::ostringstream out; out<<np<<" "<<flipSideU(s[0])<<" "<<flipCastU(c)<<" "<<flipEPU(e)<<" "<<h<<" "<<fn; return out.str(); }
+static std::string flipUci(const std::string &uci){ if(uci.size()<4) return uci; auto f=[&](char file,char rank){ int fi=file-'a', ri=rank-'1'; int nfi=7-fi, nri=7-ri; return std::string()+char('a'+nfi)+char('1'+nri); }; std::string from = f(uci[0],uci[1]); std::string to = f(uci[2],uci[3]); std::string out = from + to; if(uci.size()>=5) out.push_back(uci[4]); return out; }
+
 int depth2_knight_blunder_regression(){
     int localFailures = 0;
     const char* fen_after_d2d4 = "r1bqkbnr/pppppppp/2n5/8/3PP3/8/PPP2PPP/RNBQKBNR b KQkq d3 0 2";
     // Mirror UI defaults for geometric terms, which appear to influence the blunder case
     const char* opts = "{\"searchDepth\":2,\"terms\":{\"material\":true,\"tempo\":false},\"centerPiecePlacementReward\":50,\"endGameKingCenterMagnet\":15}";
 
-    const char* bestJson = choose_best_move(fen_after_d2d4, opts);
+    // Colorblind engine expects white-to-move: flip FEN if black to move, then flip best move back
+    std::string inputFen = fen_after_d2d4;
+    if(fen_after_d2d4 && fen_after_d2d4[0]){
+        std::istringstream ss(fen_after_d2d4); std::string p,s,c,e,h,fn; if(ss>>p>>s>>c>>e>>h>>fn){ if(!s.empty() && s[0]=='b'){ std::string flipped = flipFenU(fen_after_d2d4); if(!flipped.empty()) inputFen = flipped; } }
+    }
+    const char* bestJson = choose_best_move(inputFen.c_str(), opts);
     if (!bestJson || std::strlen(bestJson) == 0 || json_contains(bestJson, "error")){
         std::cerr << "FAIL: choose_best_move returned error/null for depth-2 scenario" << std::endl; localFailures++;
     } else {
-        std::string uci = parse_best_uci(bestJson);
+        std::string uciW = parse_best_uci(bestJson);
+        // Flip back to original orientation if we flipped the FEN
+        bool flippedIn = (inputFen != std::string(fen_after_d2d4));
+        std::string uci = flippedIn ? flipUci(uciW) : uciW;
         if (uci.empty()) { std::cerr << "FAIL: best.uci missing from choose_best_move output" << std::endl; localFailures++; }
         // EXPECTATION (desired): engine should avoid c6e5 here at depth 2.
         // We intentionally assert that it avoids c6e5, which is expected to FAIL with current behavior.
