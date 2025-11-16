@@ -290,6 +290,25 @@
         }
       }
 
+      // Append PGN result token if the position is terminal
+      try {
+        if (window.EngineBridge && typeof window.EngineBridge.detectTerminal === 'function') {
+          const term = JSON.parse(window.EngineBridge.detectTerminal(boardStateFen) || '{}');
+          let resultToken = '';
+          if (term && term.status) {
+            if (term.status === 'checkmate') {
+              resultToken = term.winner === 'w' ? '1-0' : '0-1';
+            } else if (term.status === 'stalemate' || term.status === 'draw-insufficient') {
+              resultToken = '1/2-1/2';
+            }
+          }
+          if (resultToken) {
+            res = res.trim();
+            res = res ? (res + ' ' + resultToken) : resultToken;
+          }
+        }
+      } catch { /* ignore PGN result errors */ }
+
       $box.val(res.trim());
     }
 
@@ -618,6 +637,9 @@
       ioText += 'fen sent to engine : ' + fenForEngine + '\n';
       ioText += 'engine best uci    : ' + engineUci + '\n';
       ioText += 'board-applied uci  : ' + boardUci + '\n';
+      if (obj.status) {
+        ioText += 'status             : ' + obj.status + '\n';
+      }
       if (obj.explain && obj.explain.math) {
         ioText += '\n[explain.math]\n' + obj.explain.math + '\n';
       }
@@ -861,6 +883,9 @@
       let summary = 'n/a';
       if (obj && obj.explain && typeof obj.explain.math === 'string') {
         summary = obj.explain.math.trim();
+      }
+      if (obj && obj.status && obj.status !== 'ok') {
+        summary = ('status=' + obj.status + ' | ') + summary;
       }
       $sum.text(summary);
       $raw.val(raw);

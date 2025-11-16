@@ -293,6 +293,16 @@
     return { uci: result.move.uci, score: afterEval, nodes: nodesObj.count, explain: math, depth: requestedDepth, pv: result.pv };
   };
 
+  // Insufficient material: most obvious case requested — only two kings remain
+  function onlyTwoKings(board) {
+    for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+      const p = board[r][c];
+      if (p === '.' || p === 'k' || p === 'K') continue;
+      return false;
+    }
+    return true;
+  }
+
   const EngineBridge = {
     wasmReady: false,
     wasmModule: null,
@@ -309,14 +319,68 @@
     chooseBestMove(fen, optionsJson) {
       try {
         const opts = optionsJson ? JSON.parse(optionsJson) : {};
+        const pos = parseFEN(fen);
+        let status = 'ok';
+        if (pos) {
+          const sideWhite = pos.stm === 'w';
+          // Legal moves existence check
+          const pseudo = genMoves(pos);
+          let legalCount = 0;
+          for (const m of pseudo) { const child = applyMove(pos, m); if (!isKingAttacked(child, sideWhite)) { legalCount++; break; } }
+          if (legalCount === 0) {
+            status = isKingAttacked(pos, sideWhite) ? 'checkmate' : 'stalemate';
+          } else if (onlyTwoKings(pos.board)) {
+            status = 'draw-insufficient';
+          }
+        }
         const res = choose(fen, opts) || { uci: null, score: 0, nodes: 0, explain: 'no-result', depth: (opts && opts.searchDepth) || 1 };
+
+        // Optional candidate move dump for diagnostics (material disadvantage / draw-seeking behavior)
+        let candidates = undefined;
+        if (opts && opts.debugMoves && pos) {
+          try {
+            const sideWhite = pos.stm === 'w';
+            const baseEval = evaluate(pos.board);
+            const pseudo = genMoves(pos);
+            candidates = [];
+            for (const m of pseudo) {
+              const child = applyMove(pos, m);
+              if (isKingAttacked(child, sideWhite)) continue; // skip illegal
+              let afterEval = evaluate(child.board);
+              // Treat immediate draw results (stalemate/insufficient) as 0 eval to reflect draw outcome preference
+              // This helps a side behind in material to prefer draw outcomes when available.
+              // Minimal terminal detection for child position
+              let childStatus = 'ok';
+              const childSideWhite = child.stm === 'w';
+              const childPseudo = genMoves(child);
+              let childLegal = false;
+              for (const cm of childPseudo) { const gch = applyMove(child, cm); if (!isKingAttacked(gch, childSideWhite)) { childLegal = true; break; } }
+              if (!childLegal) {
+                childStatus = isKingAttacked(child, childSideWhite) ? 'checkmate' : 'stalemate';
+              } else if (onlyTwoKings(child.board)) {
+                childStatus = 'draw-insufficient';
+              }
+              if (childStatus === 'stalemate' || childStatus === 'draw-insufficient') {
+                afterEval = 0;
+              }
+              const delta = sideWhite ? (afterEval - baseEval) : (baseEval - afterEval);
+              candidates.push({ uci: m.uci, afterEval, delta, childStatus });
+            }
+            // Sort candidates by delta descending (engine perspective)
+            candidates.sort((a, b) => b.delta - a.delta);
+          } catch (e) {
+            candidates = [{ error: String(e) }];
+          }
+        }
         const out = {
           depth: res.depth || ((opts && opts.searchDepth) || 1),
             nodesTotal: res.nodes || 0,
             best: { uci: res.uci, score: res.score },
             pv: res.pv || [],
+            status,
             explain: { math: res.explain }
         };
+        if (candidates) out.candidates = candidates;
         return JSON.stringify(out);
       } catch (e) {
         return JSON.stringify({ error: String(e) });
@@ -332,6 +396,26 @@
         return isKingAttacked(pos, testWhite);
       } catch {
         return false;
+      }
+    },
+
+    detectTerminal(fen) {
+      try {
+        const pos = parseFEN(fen);
+        if (!pos) return JSON.stringify({ status: 'error' });
+        if (onlyTwoKings(pos.board)) return JSON.stringify({ status: 'draw-insufficient' });
+        const sideWhite = pos.stm === 'w';
+        const pseudo = genMoves(pos);
+        let hasLegal = false;
+        for (const m of pseudo) { const child = applyMove(pos, m); if (!isKingAttacked(child, sideWhite)) { hasLegal = true; break; } }
+        if (!hasLegal) {
+          const inCheck = isKingAttacked(pos, sideWhite);
+          if (inCheck) return JSON.stringify({ status: 'checkmate', winner: sideWhite ? 'b' : 'w' });
+          return JSON.stringify({ status: 'stalemate' });
+        }
+        return JSON.stringify({ status: 'ok' });
+      } catch (e) {
+        return JSON.stringify({ status: 'error', error: String(e) });
       }
     },
 
