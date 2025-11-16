@@ -70,6 +70,14 @@
       outline: 3px solid #2c7;
     }
 
+    /* Highlights for legal move guidance */
+    .square.legal-origin {
+      box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.35);
+    }
+    .square.legal-dest {
+      box-shadow: inset 0 0 0 3px #06c;
+    }
+
     .panel {
       flex: 1 1 auto;
       padding: 8px 12px;
@@ -168,6 +176,15 @@
         <textarea id="engineIO" readonly></textarea>
       </div>
       <div>
+        <strong>Evaluation Explanation</strong>
+        <div id="explainSummary" class="mono" style="font-size:12px; min-height:18px; white-space:pre-wrap; border:1px solid #ddd; padding:4px; background:#fdfdfd;"></div>
+        <div style="margin:4px 0; display:flex; gap:8px; align-items:center;">
+          <button id="btnCopyExplain">Copy Raw JSON</button>
+          <span style="font-size:11px; color:#555;">Raw engine explanation payload (read-only)</span>
+        </div>
+        <textarea id="explainRaw" readonly style="height:140px;"></textarea>
+      </div>
+      <div>
         <strong>Log</strong>
         <div id="log"></div>
       </div>
@@ -205,6 +222,8 @@
     let debugLogging = false;
     let selectedSquare = null; // algebraic like 'e2'
     let sideToMove = 'w'; // updated from boardStateFen
+    let legalHumanMoves = null; // array of board-space UCIs allowed for the human
+    let lastEngineExplainRaw = '';
 
     function updateBoardState(newFen) {
       boardStateFen = newFen;
@@ -418,6 +437,19 @@
 
       const grid = parseBoardArray(currentFen);
 
+      // Precompute legal move highlighting sets
+      const humanColor = engineIsWhite ? 'b' : 'w';
+      const hasLegals = Array.isArray(legalHumanMoves) && legalHumanMoves.length > 0 && sideToMove === humanColor;
+      const originSet = new Set();
+      const destSet = new Set();
+      if (hasLegals) {
+        for (const u of legalHumanMoves) {
+          const f = u.slice(0,2), t = u.slice(2,4);
+          originSet.add(f);
+          if (selectedSquare && f === selectedSquare) destSet.add(t);
+        }
+      }
+
       for (let r = 0; r < 8; r++) {
         for (let c = 0; c < 8; c++) {
           const $div = $('<div class="square">');
@@ -433,6 +465,11 @@
 
           if (selectedSquare === sq) {
             $div.addClass('selected');
+          }
+
+          if (hasLegals) {
+            if (originSet.has(sq)) $div.addClass('legal-origin');
+            if (destSet.has(sq)) $div.addClass('legal-dest');
           }
 
           const piece = grid[r][c];
@@ -461,10 +498,34 @@
       }
     }
 
-    function simpleSanFromUci(uci) {
+    function simpleSanFromUci(uci, fenBefore) {
       debugCall('simpleSanFromUci');
       if (!uci || uci.length < 4) return uci || '';
-      return uci;
+      try {
+        const fen = fenBefore || boardStateFen;
+        const placement = (fen || '').split(' ')[0] || '';
+        const rows = placement.split('/');
+        if (rows.length !== 8) return uci;
+        const board = Array.from({ length: 8 }, () => Array(8).fill('.'));
+        for (let r = 0; r < 8; r++) {
+          let c = 0;
+          for (const ch of rows[r]) {
+            if (/^[1-8]$/.test(ch)) c += parseInt(ch, 10);
+            else if (c < 8) board[r][c++] = ch;
+          }
+        }
+        const from = uci.slice(0, 2);
+        const file = from.charCodeAt(0) - 97;
+        const rank = from.charCodeAt(1) - 49;
+        if (file < 0 || file > 7 || rank < 0 || rank > 7) return uci;
+        const rr = 7 - rank;
+        const cc = file;
+        const piece = board[rr][cc];
+        if (!piece || piece === '.' || piece.toLowerCase() === 'p') return uci;
+        return piece.toUpperCase() + uci;
+      } catch {
+        return uci;
+      }
     }
 
     function updateScore(cp) {
@@ -562,29 +623,29 @@
       }
       setEngineIO(ioText);
 
+      // Store and display explanation summary + raw JSON
+      lastEngineExplainRaw = res;
+      updateExplanationBoxes(obj, res);
+
       const nodesInfo = (typeof obj.nodesTotal === 'number') ? ', nodes=' + obj.nodesTotal : '';
       const depthInfo = (typeof obj.depth === 'number') ? ', depth=' + obj.depth : '';
       const scoreInfo = (obj.best && typeof obj.best.score === 'number') ? ', score=' + obj.best.score + ' cp' : '';
       logLine('ENGINE (white) RESULT: best=' + engineUci + ' (board=' + boardUci + ')' + scoreInfo + depthInfo + nodesInfo + ' in ' + (t1 - t0).toFixed(1) + ' ms');
 
+      // Compute move token using pre-move FEN so piece detection is correct
+      const san = simpleSanFromUci(boardUci, boardStateFen);
       const nextFen = fenApplyUciMove(boardStateFen, boardUci);
       if (!nextFen) {
         logLine('ENGINE MOVE APPLY FAILED for uci=' + boardUci);
         return;
       }
       updateBoardState(nextFen);
-
-      const san = simpleSanFromUci(boardUci);
-      if (engineIsWhite) {
-        gameMoves.push(san);
-      } else {
-        if (gameMoves.length === 0) {
-          gameMoves.push('... ' + san);
-        } else {
-          gameMoves[gameMoves.length - 1] += ' ' + san;
-        }
-      }
+      // Store moves as sequential halfmoves (always push)
+      gameMoves.push(san);
       updatePgnBox();
+
+      // After engine moves, compute legal human moves (2-ply prune)
+      requestHumanLegalMoves2Ply();
     }
 
     function tryHumanMove(fromSq, toSq) {
@@ -596,11 +657,23 @@
         logLine('Human move ignored: not ' + (humanColor === 'w' ? 'white' : 'black') + " to move.");
         return;
       }
+      // Require known legals and enforce membership
+      if (!Array.isArray(legalHumanMoves) || legalHumanMoves.length === 0) {
+        logLine('Awaiting legal moves; please wait.');
+        return;
+      }
       let uciPresentation = fromSq + toSq; // based on displayed labels attached to squares
       // When the board is rotated (black bottom), the displayed coordinates are flipped.
       // Convert presentation-space UCI to board-space UCI before applying to FEN.
       let uci = isBoardRotated() ? flipMoveUci180(uciPresentation) : uciPresentation;
       logLine('HUMAN (' + (humanColor === 'w' ? 'white' : 'black') + ') MOVE REQUEST: ' + uciPresentation + (isBoardRotated() ? (' (board=' + uci + ')') : ''));
+      if (!legalHumanMoves.includes(uci)) {
+        logLine('ILLEGAL move rejected: ' + uci + ' (not in legal set)');
+        renderBoard();
+        return;
+      }
+      // Compute move token using pre-move FEN so piece detection is correct
+      const san = simpleSanFromUci(uci, boardStateFen);
       const nextFen = fenApplyUciMove(boardStateFen, uci);
       if (!nextFen) {
         logLine('HUMAN MOVE APPLY FAILED for uci=' + uci);
@@ -608,18 +681,10 @@
       }
       updateBoardState(nextFen);
       selectedSquare = null;
-      const san = simpleSanFromUci(uci);
-      if (engineIsWhite) {
-        // human is black
-        if (gameMoves.length === 0) {
-          gameMoves.push('... ' + san);
-        } else {
-          gameMoves[gameMoves.length - 1] += ' ' + san;
-        }
-      } else {
-        // human is white
-        gameMoves.push(san);
-      }
+      // Clear legals until engine replies and we recompute
+      legalHumanMoves = null;
+      // Always push halfmove
+      gameMoves.push(san);
       updatePgnBox();
     }
 
@@ -636,6 +701,13 @@
       updateBoardState(fenText);
       updatePgnBox();
       setEngineIO('');
+
+      // If human starts, precompute legal moves
+      syncSideToMoveFromFen();
+      const humanColor = engineIsWhite ? 'b' : 'w';
+      if (sideToMove === humanColor) {
+        requestHumanLegalMoves2Ply();
+      }
 
       const $imgs = $('#board img');
       if ($imgs.length === 0) {
@@ -683,15 +755,50 @@
         const sq = $(this).data('sq');
         if (!sq) return;
 
+        // Do not allow destination selection until legals are known
+        const humanColor = engineIsWhite ? 'b' : 'w';
+        if (sideToMove === humanColor) {
+          if (!Array.isArray(legalHumanMoves) || legalHumanMoves.length === 0) {
+            // if missing, request them now
+            requestHumanLegalMoves2Ply();
+            logLine('Awaiting legal moves; click again once highlighted.');
+            return;
+          }
+        }
+
+        // Determine if clicked square contains a human piece
+        const clickedColor = ($(this).attr('data-color') || '').toLowerCase();
+        const humanColorWord = humanIsBlack ? 'black' : 'white';
+        const isHumanPiece = clickedColor === humanColorWord;
+
         if (!selectedSquare) {
+          // Only start selection on a human piece
+          if (isHumanPiece) {
+            selectedSquare = sq;
+            renderBoard();
+          }
+          return;
+        }
+
+        // If clicking the same square, clear selection
+        if (sq === selectedSquare) {
+          selectedSquare = null;
+          renderBoard();
+          return;
+        }
+
+        // If clicking another human piece while a selection is active, switch selection
+        if (isHumanPiece) {
           selectedSquare = sq;
           renderBoard();
-        } else {
-          const fromSq = selectedSquare;
-          const toSq = sq;
-          selectedSquare = null;
-          tryHumanMove(fromSq, toSq);
+          return;
         }
+
+        // Otherwise, attempt move from selected to clicked square
+        const fromSq = selectedSquare;
+        const toSq = sq;
+        selectedSquare = null;
+        tryHumanMove(fromSq, toSq);
       });
 
       newGame();
@@ -745,6 +852,67 @@
         });
       }
     });
+
+    function updateExplanationBoxes(obj, raw) {
+      debugCall('updateExplanationBoxes');
+      const $sum = $('#explainSummary');
+      const $raw = $('#explainRaw');
+      if (!$sum.length || !$raw.length) return;
+      let summary = 'n/a';
+      if (obj && obj.explain && typeof obj.explain.math === 'string') {
+        summary = obj.explain.math.trim();
+      }
+      $sum.text(summary);
+      $raw.val(raw);
+    }
+
+    $(document).on('click', '#btnCopyExplain', function () {
+      debugCall('btnCopyExplain.click');
+      const raw = $('#explainRaw').val() || '';
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(raw).then(() => {
+          logLine('Explanation JSON copied to clipboard.');
+        }).catch(() => {
+          fallbackCopy(raw);
+        });
+      } else {
+        fallbackCopy(raw);
+      }
+      function fallbackCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); logLine('Explanation JSON copied (fallback).'); } catch (e) { logLine('Copy failed: ' + e); }
+        document.body.removeChild(ta);
+      }
+    });
+
+    function requestHumanLegalMoves2Ply() {
+      debugCall('requestHumanLegalMoves2Ply');
+      if (!window.EngineBridge || !window.EngineBridge.listLegalMoves2Ply) return;
+      syncSideToMoveFromFen();
+      const humanColor = engineIsWhite ? 'b' : 'w';
+      if (sideToMove !== humanColor) return; // Only compute when it's human turn
+      const flipComm = engineIsWhite; // when engine depicted white, flip to make human side appear white to engine
+      const fenForEngine = flipComm ? flipFenString(boardStateFen) : boardStateFen;
+      const t0 = performance.now();
+      const res = window.EngineBridge.listLegalMoves2Ply(fenForEngine, JSON.stringify({ ply: 2 }));
+      const t1 = performance.now();
+      let obj = null;
+      try { obj = JSON.parse(res); } catch { obj = null; }
+      if (!obj || !Array.isArray(obj.moves)) {
+        logLine('LEGAL MOVES ERROR: could not parse engine response');
+        return;
+      }
+      // Flip moves back to board space if needed
+      const rawMoves = obj.moves || [];
+      legalHumanMoves = flipComm ? rawMoves.map(flipMoveUci180) : rawMoves.slice();
+      logLine('Legal moves ready: ' + legalHumanMoves.length + ' moves (computed in ' + (t1 - t0).toFixed(1) + ' ms)');
+      renderBoard();
+    }
 
     // General-purpose FEN move applier (basic: no legality, no captures accounting beyond placement change)
     function fenApplyUciMove(fen, uci) {

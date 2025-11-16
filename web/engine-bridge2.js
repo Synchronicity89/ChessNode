@@ -149,6 +149,40 @@
     return moves;
   };
 
+  const findKingSquare = (board, white) => {
+    const target = white ? 'K' : 'k';
+    for (let r = 0; r < 8; r++) {
+      for (let c = 0; c < 8; c++) {
+        if (board[r][c] === target) return { r, c };
+      }
+    }
+    return null;
+  };
+
+  // Filter moves by 2-ply rule: after making the move, if any opponent pseudo-legal
+  // reply captures the moving side's king, then the move is illegal (pruned).
+  const legalMoves2Ply = (fen) => {
+    const pos = parseFEN(fen);
+    if (!pos) return { moves: [], nodes: 0 };
+    const sideWhite = pos.stm === 'w';
+    const parentMoves = genMoves(pos);
+    const legal = [];
+    let nodes = 0;
+    for (const m of parentMoves) {
+      const np = applyMove(pos, m);
+      const kingSq = findKingSquare(np.board, sideWhite);
+      if (!kingSq) continue; // king already gone -> illegal
+      const replies = genMoves(np);
+      nodes += 1 + replies.length;
+      let kingCapturable = false;
+      for (const rm of replies) {
+        if (rm.to.r === kingSq.r && rm.to.c === kingSq.c) { kingCapturable = true; break; }
+      }
+      if (!kingCapturable) legal.push(m.uci);
+    }
+    return { moves: legal, nodes };
+  };
+
   const applyMove = (pos, move, promo = '') => {
     const board = pos.board.map(row => row.slice());
     const piece = board[move.from.r][move.from.c];
@@ -224,6 +258,15 @@
           explain: { math: res.explain }
         };
         return JSON.stringify(out);
+      } catch (e) {
+        return JSON.stringify({ error: String(e) });
+      }
+    },
+
+    listLegalMoves2Ply(fen, optionsJson) {
+      try {
+        const res = legalMoves2Ply(fen);
+        return JSON.stringify({ moves: res.moves, nodesTotal: res.nodes, ply: 2 });
       } catch (e) {
         return JSON.stringify({ error: String(e) });
       }
