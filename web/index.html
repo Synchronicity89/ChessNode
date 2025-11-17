@@ -46,17 +46,6 @@
       display: grid;
       grid-template-columns: repeat(8, 64px);
       grid-template-rows: repeat(8, 64px);
-      transform-origin: center center;
-    }
-
-    /* When the board is visually rotated 180deg, rotate each piece image back so
-       that piece artwork remains upright. Using the data-rotated attribute avoids
-       reliance on inline style string parsing. */
-    .board[data-rotated="180"] img {
-      transform: rotate(180deg);
-      transform-origin: center center;
-      /* Prevent blurring on nested transforms in some browsers */
-      image-rendering: auto;
     }
 
     .square {
@@ -66,6 +55,7 @@
       align-items: center;
       justify-content: center;
       box-sizing: border-box;
+      position: relative;
     }
 
     .light {
@@ -86,6 +76,20 @@
     }
     .square.legal-dest {
       box-shadow: inset 0 0 0 3px #06c;
+    }
+
+    /* Small algebraic coordinate badge in each square */
+    .sq-label {
+      position: absolute;
+      top: 2px;
+      left: 4px;
+      font-size: 10px;
+      line-height: 10px;
+      color: rgba(0,0,0,0.55);
+      user-select: none;
+      pointer-events: none;
+      z-index: 1;
+      text-shadow: 0 1px 0 rgba(255,255,255,0.4);
     }
 
     .panel {
@@ -480,8 +484,7 @@
       if (!$board.length) return;
 
       $board.empty();
-      $board.css('transform', boardFlipped ? 'rotate(180deg)' : 'none');
-      // Expose current rotation for tests and debugging: '0' or '180'.
+      // Expose current rotation for tests and debugging only (no CSS rotation used)
       $board.attr('data-rotated', boardFlipped ? '180' : '0');
 
       const grid = parseBoardArray(currentFen);
@@ -567,12 +570,23 @@
         }
       }
 
+      // Helper to get piece at an algebraic square from current FEN
+      function getPieceAt(sq){
+        const placement = (currentFen || '').split(' ')[0] || '';
+        const rows = placement.split('/');
+        if (rows.length!==8) return '.';
+        const f=sq.charCodeAt(0)-97; const rank=sq.charCodeAt(1)-49; if(f<0||f>7||rank<0||rank>7) return '.';
+        const rr=7-rank; let cc=0; for(const ch of rows[rr]){ if(/^[1-8]$/.test(ch)){ cc+=parseInt(ch,10);} else { if(cc===f) return ch; cc++; } }
+        return '.';
+      }
+
       for (let r = 0; r < 8; r++) {
         for (let c = 0; c < 8; c++) {
           const $div = $('<div class="square">');
           $div.addClass(((r + c) % 2) ? 'dark' : 'light');
 
-          // Map visual square to algebraic (taking boardFlipped into account)
+          // Map visual square to algebraic without CSS transforms.
+          // When flipped (black at bottom), both axes are inverted.
           const fileIdx = boardFlipped ? 7 - c : c;
           const rankIdx = boardFlipped ? r : 7 - r;
           const fileChar = String.fromCharCode(97 + fileIdx);
@@ -594,7 +608,14 @@
             if (TRACE_SQUARES.has(sq)) traceLog('square.legals-tag', { sq, origin: originSet.has(sq), dest: destSet.has(sq) });
           }
 
-          const piece = grid[r][c];
+          // Add small coordinate label inside each square
+          try {
+            const $lab = $('<div class="sq-label">').text(sq);
+            $div.append($lab);
+          } catch {}
+
+          // Determine and render the correct piece for this algebraic square
+          const piece = getPieceAt(sq);
           if (piece && piece !== '.') {
             const isWhite = (piece === piece.toUpperCase());
             const $img = $('<img>', {
@@ -620,29 +641,6 @@
           $board.append($div);
         }
       }
-
-      // Defensive: ensure piece metadata exists even if image append path was skipped.
-      try {
-        const placement = (currentFen || '').split(' ')[0] || '';
-        function getPieceAt(sq){
-          const rows = placement.split('/');
-          if (rows.length!==8) return '.';
-          const f=sq.charCodeAt(0)-97; const r=sq.charCodeAt(1)-49; if(f<0||f>7||r<0||r>7) return '.';
-          const rr=7-r; let cc=0; for(const ch of rows[rr]){ if(/^[1-8]$/.test(ch)){ cc+=parseInt(ch,10);} else { if(cc===f) return ch; cc++; } }
-          return '.';
-        }
-        $board.children('.square').each(function(){
-          const el = $(this);
-          if (el.attr('data-color')) return;
-          const sq = el.data('sq');
-          if (!sq) return;
-          const p = getPieceAt(sq);
-          if (p && p!=='.') {
-            el.attr('data-piece', p);
-            el.attr('data-color', (p===p.toUpperCase()) ? 'white' : 'black');
-          }
-        });
-      } catch {}
     }
 
     function simpleSanFromUci(uci, fenBefore) {
@@ -1047,6 +1045,11 @@
           // Only start selection on a human piece
           if (isHumanPiece) {
             selectedSquare = sq;
+            // Sync Workaround textbox with the selected origin square
+            try {
+              const $in = $('#humanMoveInput');
+              if ($in.length) $in.val(sq);
+            } catch {}
             renderBoard();
             traceLog('selection.begin', { sq });
           }
@@ -1064,6 +1067,11 @@
         // If clicking another human piece while a selection is active, switch selection
         if (isHumanPiece) {
           selectedSquare = sq;
+          // Reset Workaround textbox to new origin square
+          try {
+            const $in = $('#humanMoveInput');
+            if ($in.length) $in.val(sq);
+          } catch {}
           renderBoard();
           traceLog('selection.switch', { sq });
           return;
@@ -1073,7 +1081,24 @@
         const fromSq = selectedSquare;
         const toSq = sq;
         selectedSquare = null;
+        // Append destination to Workaround textbox (e.g., d5d4)
+        try {
+          const $in = $('#humanMoveInput');
+          if ($in.length) $in.val(fromSq + toSq);
+        } catch {}
+        // Attempt the normal click-path move first
+        const fenBefore = boardStateFen;
         tryHumanMove(fromSq, toSq, evt);
+        // If no move occurred, programmatically trigger the Apply button as a fallback
+        try {
+          if (boardStateFen === fenBefore) {
+            const $btn = $('#btnHumanMoveApply');
+            if ($btn.length) {
+              traceLog('fallback.apply-button', { token: (fromSq + toSq) });
+              $btn.trigger('click');
+            }
+          }
+        } catch {}
         traceLog('move.dispatch', { from: fromSq, to: toSq });
       });
 
