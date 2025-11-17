@@ -162,6 +162,18 @@
         <label>FEN <input id="fenInput" type="text" style="width:100%;" class="mono"
             placeholder="Optional: paste FEN then New Game"></label>
       </div>
+      <div style="border:1px solid #e5b800; background:#fffbe6; padding:8px; border-radius:4px;">
+        <strong>Workaround: Type Human Move</strong>
+        <div style="font-size:12px; color:#555; margin:4px 0;">
+          If clicking a piece doesn't work, type your move and press Apply.
+          Use the square labels you see on the board (e.g., <code>d5d4</code>),
+          add a promotion letter if needed (e.g., <code>e2e1q</code>).
+        </div>
+        <div class="row">
+          <input id="humanMoveInput" type="text" class="mono" style="width:140px;" placeholder="e.g., d5d4">
+          <button id="btnHumanMoveApply">Apply Human Move</button>
+        </div>
+      </div>
       <div>
         <strong>Current Board FEN</strong>
         <input id="fenCurrent" type="text" class="mono" style="width:100%;" readonly>
@@ -224,6 +236,14 @@
     let sideToMove = 'w'; // updated from boardStateFen
     let legalHumanMoves = null; // array of board-space UCIs allowed for the human
     let lastEngineExplainRaw = '';
+    // Tracing instrumentation (can be toggled via window.TRACE_MOVES)
+    window.TRACE_MOVES = window.TRACE_MOVES !== undefined ? window.TRACE_MOVES : true;
+    const TRACE_SQUARES = new Set(['e5','d5','d4','e4']);
+    function traceLog(label, obj) {
+      if (!window.TRACE_MOVES) return;
+      try { console.log('[trace]', label, JSON.stringify(obj)); }
+      catch { console.log('[trace]', label, obj); }
+    }
 
     function updateBoardState(newFen) {
       boardStateFen = newFen;
@@ -462,10 +482,78 @@
       const originSet = new Set();
       const destSet = new Set();
       if (hasLegals) {
+        { // debug: entry log and assertions
+          try {
+            console.log('[renderBoard][legals] enter {', {
+              sideToMove,
+              humanColor,
+              selectedSquare,
+              legalHumanMovesLen: legalHumanMoves ? legalHumanMoves.length : 0
+            }, '}');
+            console.assert(typeof sideToMove === 'string', '[ASSERT] sideToMove must be string');
+            console.assert(humanColor === 'w' || humanColor === 'b', '[ASSERT] humanColor must be w/b', humanColor);
+            if (selectedSquare !== null && selectedSquare !== undefined) {
+              console.assert(typeof selectedSquare === 'string' && selectedSquare.length === 2, '[ASSERT] selectedSquare malformed', selectedSquare);
+            }
+            console.assert(Array.isArray(legalHumanMoves), '[ASSERT] legalHumanMoves must be an array');
+            console.assert(legalHumanMoves.length > 0, '[ASSERT] legalHumanMoves must be non-empty');
+          } catch {}
+        }
         for (const u of legalHumanMoves) {
-          const f = u.slice(0,2), t = u.slice(2,4);
-          originSet.add(f);
-          if (selectedSquare && f === selectedSquare) destSet.add(t);
+          { // inner-scope for breakpointing and pretty inspection
+            try {
+              console.assert(typeof u === 'string' && u.length >= 4, '[ASSERT] move UCI malformed', u);
+            } catch {}
+            const f = u.slice(0, 2);
+            const t = u.slice(2, 4);
+            { // debug: e5 watch
+              // TODO: remove hack — temporary verbose logging for any occurrence of 'e5'
+              try {
+                if ((u && u.includes('e5')) || f === 'e5' || t === 'e5' || selectedSquare === 'e5') {
+                  console.log('[renderBoard][e5-watch] {', {
+                    u,
+                    from: f,
+                    to: t,
+                    selectedSquare,
+                    boardFlipped,
+                    sideToMove,
+                    humanColor
+                  }, '}');
+                }
+              } catch {}
+            }
+            try { originSet.add(f); } catch {}
+            if (selectedSquare) {
+              { // nested if for precise breakpoints
+                if (f === selectedSquare) {
+                  { // deepest scope
+                    try { destSet.add(t); } catch {}
+                  }
+                } else {
+                  { // debug: non-matching origin to current selection
+                    try { /* no-op debug branch */ } catch {}
+                  }
+                }
+              }
+            } else {
+              { // debug: selectedSquare is null
+                try { /* selectedSquare is not set; no dests added */ } catch {}
+              }
+            }
+          }
+        }
+        { // debug: exit log
+          try {
+            const originFew = Array.from(originSet).slice(0, 12);
+            const destFew = Array.from(destSet).slice(0, 12);
+            console.log('[renderBoard][legals] exit {', {
+              selectedSquare,
+              originCount: originSet.size,
+              destCount: destSet.size,
+              originFew,
+              destFew
+            }, '}');
+          } catch {}
         }
       }
 
@@ -484,6 +572,7 @@
           // Also persist as an HTML data-* attribute so non-jQuery callers (e.g., tests)
           // can reliably query by square without needing jQuery's internal data store.
           $div.attr('data-sq', sq);
+          if (TRACE_SQUARES.has(sq)) traceLog('square.init', { sq, r, c, boardFlipped, selectedSquare });
 
           if (selectedSquare === sq) {
             $div.addClass('selected');
@@ -492,6 +581,7 @@
           if (hasLegals) {
             if (originSet.has(sq)) $div.addClass('legal-origin');
             if (destSet.has(sq)) $div.addClass('legal-dest');
+            if (TRACE_SQUARES.has(sq)) traceLog('square.legals-tag', { sq, origin: originSet.has(sq), dest: destSet.has(sq) });
           }
 
           const piece = grid[r][c];
@@ -509,10 +599,12 @@
             $div.attr('data-piece', piece);
             $div.attr('data-color', isWhite ? 'white' : 'black');
             $div.append($img);
+            if (TRACE_SQUARES.has(sq)) traceLog('square.piece', { sq, piece, isWhite });
           } else {
             // Ensure empty squares do not carry stale metadata
             $div.removeAttr('data-piece');
             $div.removeAttr('data-color');
+            if (TRACE_SQUARES.has(sq)) traceLog('square.empty', { sq });
           }
 
           $board.append($div);
@@ -699,15 +791,18 @@
     function tryHumanMove(fromSq, toSq, evtOrOpts) {
       debugCall('tryHumanMove');
       if (!fromSq || !toSq || fromSq === toSq) return;
+      traceLog('move.start', { from: fromSq, to: toSq, sideToMove, boardFlipped });
       syncSideToMoveFromFen();
       const humanColor = engineIsWhite ? 'b' : 'w';
       if (sideToMove !== humanColor) {
         logLine('Human move ignored: not ' + (humanColor === 'w' ? 'white' : 'black') + " to move.");
+        traceLog('move.reject.turn', { from: fromSq, to: toSq, sideToMove, humanColor });
         return;
       }
       // Require known legals and enforce membership
       if (!Array.isArray(legalHumanMoves) || legalHumanMoves.length === 0) {
         logLine('Awaiting legal moves; please wait.');
+        traceLog('move.reject.no-legals', { from: fromSq, to: toSq });
         return;
       }
       let uciPresentation = fromSq + toSq; // based on provided squares
@@ -716,6 +811,7 @@
       const uciFlipped = flipMoveUci180(uciPresentation);
       const prefer = isBoardRotated() ? [uciFlipped, uciPresentation] : [uciPresentation, uciFlipped];
       let uci = prefer[0];
+      traceLog('move.candidates', { prefer, chosenInitial: uci, legalsLen: legalHumanMoves.length });
       // Diagnostic: show move candidates and current legal set head
       try {
         const head = (legalHumanMoves || []).slice(0, 12).join(' ');
@@ -724,6 +820,7 @@
       // Promotion handling: if pawn reaches last rank, append promotion piece (default 'q').
       try {
         const ctrlHeld = !!(evtOrOpts && (evtOrOpts.ctrlKey || evtOrOpts.ctrl));
+        const forcedPromo = (evtOrOpts && typeof evtOrOpts.promotion === 'string') ? (evtOrOpts.promotion || '').toLowerCase() : null;
         const placement = (boardStateFen || '').split(' ')[0] || '';
         function getPieceAt(sq){
           const rows = placement.split('/');
@@ -739,8 +836,8 @@
         const isWhitePawn = mover === mover.toUpperCase();
         const reachesLast = isPawn && ((isWhitePawn && toRankNum===8) || (!isWhitePawn && toRankNum===1));
         if (reachesLast) {
-          let promo = 'q';
-          if (ctrlHeld) {
+          let promo = (forcedPromo && /^[qrbn]$/.test(forcedPromo)) ? forcedPromo : 'q';
+          if (!forcedPromo && ctrlHeld) {
             const choice = (prompt('Promote to (q,r,b,n)?','q') || 'q').trim().toLowerCase();
             if (/^[qrbn]$/.test(choice)) promo = choice;
           }
@@ -752,8 +849,10 @@
         // Try alternate candidate if first choice not legal
         const alt = prefer[1];
         logLine('HUMAN move not in legals, trying alt: ' + alt);
+        traceLog('move.alt.try', { original: uci, alt });
         if (legalHumanMoves.includes(alt)) {
           uci = alt;
+          traceLog('move.alt.accept', { accepted: uci });
         }
       }
       if (!legalHumanMoves.includes(uci)) {
@@ -761,8 +860,10 @@
         try {
           const sample = (legalHumanMoves || []).slice(0, 20).join(' ');
           logLine('ILLEGAL move rejected: ' + uci + ' (not in legal set). Sample legals: ' + sample);
+          traceLog('move.illegal', { uci, sampleLen: legalHumanMoves.length });
         } catch {
           logLine('ILLEGAL move rejected: ' + uci + ' (not in legal set)');
+          traceLog('move.illegal.simple', { uci });
         }
 
         // HACK fallback: Re-query engine legals directly and, if intended move is legal,
@@ -792,6 +893,7 @@
                 gameMoves.push(san);
                 updatePgnBox();
                 logLine('FALLBACK: Forced apply of legal move ' + chosen + ' after UI mismatch.');
+                traceLog('move.fallback', { chosen, nextFen });
                 // Precompute next legals for the human if still their turn
                 requestHumanLegalMoves2Ply();
                 return;
@@ -807,6 +909,7 @@
       const nextFen = fenApplyUciMove(boardStateFen, uci);
       if (!nextFen) {
         logLine('HUMAN MOVE APPLY FAILED for uci=' + uci);
+        traceLog('move.apply.failed', { uci });
         return;
       }
       updateBoardState(nextFen);
@@ -816,6 +919,7 @@
       // Always push halfmove
       gameMoves.push(san);
       updatePgnBox();
+      traceLog('move.apply.success', { uci, san, nextFen });
     }
 
     function newGame() {
@@ -879,11 +983,39 @@
         engineChooseBestMove();
       });
 
+      // Fallback typed human move handler
+      $('#btnHumanMoveApply').on('click', function(){
+        try {
+          const raw = ($('#humanMoveInput').val() || '').toString().trim();
+          const token = raw.replace(/\s+/g,'').toLowerCase();
+          if (!token) { logLine('Enter a move like d5d4 or e7e8q, then press Apply.'); return; }
+          if (!/^[a-h][1-8][a-h][1-8]([qrbn])?$/.test(token)) {
+            logLine('Invalid move format. Use d5d4 or e7e8q for promotion.');
+            return;
+          }
+          // Ensure legals are known
+          if (!Array.isArray(legalHumanMoves) || legalHumanMoves.length === 0) {
+            requestHumanLegalMoves2Ply();
+          }
+          const fromSq = token.slice(0,2);
+          const toSq = token.slice(2,4);
+          const promo = token.length>4 ? token.slice(4) : '';
+          logLine('Applying typed human move: ' + token);
+          traceLog('typed.move', { token, fromSq, toSq, promo });
+          // Pass promotion override so no prompt and exact piece is used
+          tryHumanMove(fromSq, toSq, { promotion: promo });
+        } catch (e) {
+          logLine('Typed move failed: ' + e);
+        }
+      });
+
       // Click-to-move handler for human moves
       $('#board').on('click', '.square', function (evt) {
         debugCall('board.square.click');
         const sq = $(this).data('sq');
         if (!sq) return;
+        traceLog('click.start', { sq, selectedSquare, sideToMove, boardFlipped });
+        try { traceLog('click.dom', { sq, piece: this.getAttribute('data-piece'), color: this.getAttribute('data-color'), classes: Array.from(this.classList) }); } catch {}
 
         // Do not allow destination selection until legals are known
         const humanColor = engineIsWhite ? 'b' : 'w';
@@ -906,6 +1038,7 @@
           if (isHumanPiece) {
             selectedSquare = sq;
             renderBoard();
+            traceLog('selection.begin', { sq });
           }
           return;
         }
@@ -914,6 +1047,7 @@
         if (sq === selectedSquare) {
           selectedSquare = null;
           renderBoard();
+          traceLog('selection.cancel', { sq });
           return;
         }
 
@@ -921,6 +1055,7 @@
         if (isHumanPiece) {
           selectedSquare = sq;
           renderBoard();
+          traceLog('selection.switch', { sq });
           return;
         }
 
@@ -929,9 +1064,31 @@
         const toSq = sq;
         selectedSquare = null;
         tryHumanMove(fromSq, toSq, evt);
+        traceLog('move.dispatch', { from: fromSq, to: toSq });
       });
 
       newGame();
+      // MutationObserver for watched squares
+      try {
+        const boardEl = document.getElementById('board');
+        if (boardEl && window.TRACE_MOVES) {
+          const mo = new MutationObserver(muts => {
+            for (const m of muts) {
+              if (m.type === 'childList') {
+                for (const sq of TRACE_SQUARES) {
+                  const node = boardEl.querySelector('.square[data-sq="' + sq + '"]');
+                  if (node) traceLog('mutation.childList', { sq, piece: node.getAttribute('data-piece'), color: node.getAttribute('data-color'), classes: Array.from(node.classList) });
+                }
+              } else if (m.type === 'attributes') {
+                const sq = m.target.getAttribute('data-sq');
+                if (sq && TRACE_SQUARES.has(sq)) traceLog('mutation.attr', { sq, attr: m.attributeName, value: m.target.getAttribute(m.attributeName) });
+              }
+            }
+          });
+          mo.observe(boardEl, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-piece','class'] });
+          traceLog('observer.ready', { squares: Array.from(TRACE_SQUARES) });
+        }
+      } catch {}
     }
 
     // Test/automation helper: perform a human move by ensuring legals are computed
