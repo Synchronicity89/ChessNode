@@ -13,6 +13,10 @@ function waitBridgeReady() {
 const FEN_QB4_LINE = '6k1/5pp1/6p1/6Q1/8/n2b4/1r1n4/qrbK4 w - - 5 4';
 const FEN_MATE_LINE = '8/8/P3R3/3k1P2/1P3P2/P6R/3N3P/3K2N1 w - - 7 45';
 
+// Quick test switch: set env QUICK=1 (or 'true') to skip slow tests
+const QUICK = (typeof process !== 'undefined') && (process.env.QUICK === '1' || String(process.env.QUICK).toLowerCase() === 'true');
+const itSlow = QUICK ? it.skip : it; // mark slow tests with itSlow
+
 function chooseBest(fen, opts) {
   const json = window.EngineBridge.chooseBestMove(fen, JSON.stringify(opts || {}));
   try { return JSON.parse(json); } catch { return null; }
@@ -57,7 +61,8 @@ describe('Threefold repetition handling', () => {
     expect(child.best && child.best.score).toBe(0);
   });
 
-  it('avoids repetition and finds the mate line when winning', () => {
+  // Slow: deeper search to find mate line; skip when QUICK is enabled
+  itSlow('avoids repetition and finds the mate line when winning', () => {
     const legals = listLegals(FEN_MATE_LINE);
     expect(legals.length).toBeGreaterThan(0);
     let repeatMove = null;

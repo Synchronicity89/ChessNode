@@ -4,9 +4,14 @@
   "private": true,
   "license": "MIT",
   "scripts": {
+    "test": "vitest run",
     "test:stockfish-race": "node scripts/stockfish_promotion_race_test.js"
   },
   "dependencies": {
     "stockfish": "^16.0.0"
+  },
+  "devDependencies": {
+    "jsdom": "^27.2.0",
+    "vitest": "^1.0.0"
   }
 }

@@ -49,6 +49,16 @@
       transform-origin: center center;
     }
 
+    /* When the board is visually rotated 180deg, rotate each piece image back so
+       that piece artwork remains upright. Using the data-rotated attribute avoids
+       reliance on inline style string parsing. */
+    .board[data-rotated="180"] img {
+      transform: rotate(180deg);
+      transform-origin: center center;
+      /* Prevent blurring on nested transforms in some browsers */
+      image-rendering: auto;
+    }
+
     .square {
       width: 64px;
       height: 64px;

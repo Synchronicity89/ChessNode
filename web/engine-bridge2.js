@@ -6,6 +6,22 @@
 (function (global) {
   'use strict';
 
+  // Minimal window/document polyfill when running under plain node (vitest node env)
+  if (typeof window === 'undefined') {
+    global.window = {};
+    const listeners = {};
+    window.addEventListener = (name, fn) => { (listeners[name] = listeners[name] || []).push(fn); };
+    window.dispatchEvent = (evt) => {
+      const arr = listeners[evt.type] || [];
+      for (const fn of arr) fn(evt);
+    };
+    if (!global.document) {
+      global.document = {
+        createEvent: () => ({ initEvent: function(type){ this.type = type; }, type: '' })
+      };
+    }
+  }
+
   let debug = false;
   let prngState = 1 >>> 0;
 
@@ -165,6 +181,82 @@
     return moves;
   };
 
+  // Determine if a given square (r,c) is attacked by the opponent of `sideWhite` in position `pos.board`.
+  // Uses a lightweight direct attack scan (no recursion) to allow more precise legality filtering than
+  // relying on opponent move generation that may include illegal pinned moves.
+  function squareAttacked(pos, r, c, byWhite) {
+      // Pawns: to see if (r,c) is attacked by pawns of color `byWhite`, we must look one rank
+      // behind the target square relative to that color's forward direction.
+      // White pawns attack (pr-1, pc±1); Black pawns attack (pr+1, pc±1).
+      // Therefore for target (r,c): white pawn attackers are at (r+1, c±1); black pawn attackers at (r-1, c±1).
+      const dir = byWhite ? -1 : 1; // original forward direction (white: -1)
+      const pawnRow = byWhite ? r + 1 : r - 1;
+      for (const dc of [-1, 1]) {
+        const pc = c + dc;
+        if (inside(pawnRow, pc)) {
+          const p = pos.board[pawnRow][pc];
+          if (p !== '.' && p.toLowerCase() === 'p' && (byWhite ? isWhite(p) : isBlack(p))) return true;
+        }
+      }
+    // Knights
+    const knightDeltas = [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]];
+    for (const [dr, dc] of knightDeltas) {
+      const nr = r + dr, nc = c + dc;
+      if (!inside(nr, nc)) continue;
+      const p = pos.board[nr][nc];
+      if (p !== '.' && p.toLowerCase() === 'n' && (byWhite ? isWhite(p) : isBlack(p))) return true;
+    }
+    // Sliding pieces: bishops/rooks/queens
+    const rays = [
+      [-1,-1],[-1,1],[1,-1],[1,1], // diagonals
+      [-1,0],[1,0],[0,-1],[0,1]    // orthogonals
+    ];
+    for (const [dr, dc] of rays) {
+      let nr = r + dr, nc = c + dc;
+      while (inside(nr, nc)) {
+        const p = pos.board[nr][nc];
+        if (p !== '.') {
+          const whiteP = isWhite(p);
+          if ((byWhite && whiteP) || (!byWhite && !whiteP)) {
+            const pl = p.toLowerCase();
+            const diag = dr !== 0 && dc !== 0;
+            const ortho = (dr === 0 || dc === 0);
+            if ((diag && (pl === 'b' || pl === 'q')) || (ortho && (pl === 'r' || pl === 'q'))) return true;
+          }
+          break; // blocked by any piece
+        }
+        nr += dr; nc += dc;
+      }
+    }
+    // King proximity
+    for (let kr = -1; kr <= 1; kr++) for (let kc = -1; kc <= 1; kc++) {
+      if (kr === 0 && kc === 0) continue;
+      const nr = r + kr, nc = c + kc;
+      if (!inside(nr, nc)) continue;
+      const p = pos.board[nr][nc];
+      if (p !== '.' && p.toLowerCase() === 'k' && (byWhite ? isWhite(p) : isBlack(p))) return true;
+    }
+    return false;
+  }
+
+  // Produce fully legal moves (filtering king exposure) based on pseudo move list.
+  function generateLegalMoves(pos) {
+    const sideWhite = pos.stm === 'w';
+    const pseudo = genMoves(pos);
+    const legal = [];
+    const kingSq = findKingSquare(pos.board, sideWhite);
+    for (const m of pseudo) {
+      const child = applyMove(pos, m);
+      // After move, original side's king might have moved; recompute its square.
+      const ksq = findKingSquare(child.board, sideWhite);
+      if (!ksq) continue; // king vanished (illegal capture)
+      // If square is attacked by opponent in child, move illegal.
+      if (squareAttacked(child, ksq.r, ksq.c, !sideWhite)) continue;
+      legal.push(m);
+    }
+    return legal;
+  }
+
   const findKingSquare = (board, white) => {
     const target = white ? 'K' : 'k';
     for (let r = 0; r < 8; r++) {
@@ -178,13 +270,8 @@
   // True if the given color's king is attacked in this position (pseudo-legal attack test)
   const isKingAttacked = (pos, kingWhite) => {
     const ksq = findKingSquare(pos.board, kingWhite);
-    if (!ksq) return true; // no king found -> treat as attacked
-    const opp = { ...pos, stm: kingWhite ? 'b' : 'w' };
-    const oppMoves = genMoves(opp);
-    for (const m of oppMoves) {
-      if (m.to.r === ksq.r && m.to.c === ksq.c) return true;
-    }
-    return false;
+    if (!ksq) return true;
+    return squareAttacked(pos, ksq.r, ksq.c, !kingWhite);
   };
 
   // Filter moves by 2-ply rule: after making the move, if any opponent pseudo-legal
@@ -359,12 +446,7 @@
     }
 
     // Generate and filter to legal moves (do not leave own king attacked)
-    const pseudo = genMoves(pos);
-    const legal = [];
-    for (const m of pseudo) {
-      const child = applyMove(pos, m);
-      if (!isKingAttacked(child, sideWhite)) legal.push(m);
-    }
+    const legal = generateLegalMoves(pos);
     if (legal.length === 0) {
       // Terminal: no legal moves. If in check -> checkmate; else stalemate
       const inCheck = isKingAttacked(pos, sideWhite);
@@ -594,6 +676,44 @@
       }
     },
 
+    // Diagnostic helper: returns terminal status plus pseudo vs fully legal move counts and check flag.
+    debugTerminal(fen) {
+      try {
+        const pos = parseFEN(fen);
+        if (!pos) return { status: 'error' };
+        const sideWhite = pos.stm === 'w';
+        const pseudo = genMoves(pos);
+        let legalCount = 0;
+        for (const m of pseudo) { const child = applyMove(pos, m); if (!isKingAttacked(child, sideWhite)) legalCount++; }
+        const inCheck = isKingAttacked(pos, sideWhite);
+        let status = 'ok';
+        if (onlyTwoKings(pos.board)) status = 'draw-insufficient';
+        else if (legalCount === 0) status = inCheck ? 'checkmate' : 'stalemate';
+        return { status, pseudoCount: pseudo.length, legalCount, inCheck };
+      } catch (e) {
+        return { status: 'error', error: String(e) };
+      }
+    },
+
+    // Detailed move legality dump for diagnostics: returns array of { uci, legal }
+    debugMovesForFen(fen) {
+      try {
+        const pos = parseFEN(fen);
+        if (!pos) return [];
+        const sideWhite = pos.stm === 'w';
+        const pseudo = genMoves(pos);
+        const out = [];
+        for (const m of pseudo) {
+          const child = applyMove(pos, m);
+          const legal = !isKingAttacked(child, sideWhite);
+          out.push({ uci: m.uci, legal });
+        }
+        return out;
+      } catch (e) {
+        return [{ error: String(e) }];
+      }
+    },
+
     listLegalMoves2Ply(fen, optionsJson) {
       try {
         const res = legalMoves2Ply(fen);
@@ -625,7 +745,14 @@
     }
   };
 
+  // In browser invocation where global is window, assigning global.EngineBridge suffices.
+  // In node (no real window at invocation time) we polyfilled global.window inside this IIFE,
+  // but the invocation argument was globalThis, so window.EngineBridge would remain undefined.
+  // Provide a mirrored assignment so tests that reference window.EngineBridge succeed in node env.
   global.EngineBridge = EngineBridge;
+  if (global.window && !global.window.EngineBridge) {
+    global.window.EngineBridge = EngineBridge;
+  }
   EngineBridge.wasmReady = true;
   try {
     const evt = new Event('engine-bridge-ready');
@@ -635,4 +762,4 @@
     evt.initEvent('engine-bridge-ready', true, true);
     window.dispatchEvent(evt);
   }
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);
