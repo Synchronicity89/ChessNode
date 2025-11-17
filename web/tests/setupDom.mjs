@@ -3,16 +3,21 @@ import { JSDOM } from 'jsdom';
 import path from 'node:path';
 import url from 'node:url';
 
-export async function loadIndexHtml() {
+export async function loadIndexHtml(options) {
   const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
   const htmlPath = path.resolve(__dirname, '..', 'index.html');
   let html = readFileSync(htmlPath, 'utf8');
+  const useRealEngine = !!(options && options.realEngine);
 
-  // In tests, prevent external fetch of engine-bridge2.js by stripping the script tag.
-  html = html.replace(/<script\s+src=["']engine-bridge2\.js["']><\/script>/i, '<script>/* engine bridge removed in tests */<\/script>');
+  // In tests, prevent external fetch of engine-bridge2.js by stripping the script tag,
+  // unless caller explicitly requests the real engine to be inlined.
+  if (!useRealEngine) {
+    html = html.replace(/<script\s+src=["']engine-bridge2\.js["']><\/script>/i, '<script>/* engine bridge removed in tests */<\/script>');
+  }
 
+  const query = (options && options.query) ? options.query : '';
   const dom = new JSDOM(html, {
-    url: 'http://localhost/',
+    url: 'http://localhost/' + query,
     runScripts: 'dangerously',
     resources: 'usable',
     pretendToBeVisual: true,
@@ -26,6 +31,14 @@ export async function loadIndexHtml() {
   await new Promise((resolve) => {
     dom.window.addEventListener('load', () => resolve());
   });
+
+  // If requested, inline the real JS engine (engine-bridge2.js) directly into the DOM
+  // so tests use the same code as the page does in production (no WASM here).
+  if (useRealEngine) {
+    const enginePath = path.resolve(__dirname, '..', 'engine-bridge2.js');
+    const engineSrc = readFileSync(enginePath, 'utf8');
+    dom.window.eval(engineSrc);
+  }
 
   return dom;
 }
