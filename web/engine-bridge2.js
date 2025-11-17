@@ -233,11 +233,74 @@
 
   const posToFEN = (pos) => `${encodeBoard(pos.board)} ${pos.stm} ${pos.castling || '-'} ${pos.ep || '-'} ${pos.half || '0'} ${pos.full || '1'}`;
 
+  const repetitionKeyFromPos = (pos) => {
+    if (!pos) return null;
+    const castling = pos.castling && pos.castling !== '' ? pos.castling : '-';
+    const ep = pos.ep && pos.ep !== '' ? pos.ep : '-';
+    return `${encodeBoard(pos.board)} ${pos.stm} ${castling} ${ep}`;
+  };
+
+  function buildRepetitionTracker(opts) {
+    const repOpts = opts && opts.repetition ? opts.repetition : null;
+    const threshold = Math.max(2, Math.floor(repOpts && repOpts.threshold ? repOpts.threshold : 3) || 3);
+    const tracker = {
+      counts: new Map(),
+      threshold,
+      keyFn: repetitionKeyFromPos,
+      drawKeys: new Set()
+    };
+
+    if (!repOpts) return tracker;
+
+    const addKey = (key, inc = 1) => {
+      if (!key) return;
+      const delta = Number(inc) || 0;
+      if (delta <= 0) return;
+      tracker.counts.set(key, (tracker.counts.get(key) || 0) + delta);
+    };
+
+    const ingestFen = (fenText, weight = 1) => {
+      if (!fenText || typeof fenText !== 'string') return;
+      const parsed = parseFEN(fenText);
+      if (!parsed) return;
+      addKey(repetitionKeyFromPos(parsed), weight);
+    };
+
+    if (Array.isArray(repOpts.history)) {
+      for (const entry of repOpts.history) {
+        if (!entry) continue;
+        if (typeof entry === 'string') {
+          ingestFen(entry, 1);
+        } else if (typeof entry === 'object') {
+          if (entry.fen) ingestFen(entry.fen, entry.count || 1);
+          else if (entry.key) addKey(String(entry.key), entry.count || 1);
+        }
+      }
+    }
+
+    if (Array.isArray(repOpts.keys)) {
+      for (const key of repOpts.keys) addKey(String(key), 1);
+    }
+
+    if (repOpts.keyCounts && typeof repOpts.keyCounts === 'object') {
+      for (const [key, count] of Object.entries(repOpts.keyCounts)) addKey(String(key), count);
+    }
+
+    return tracker;
+  }
+
   // Terminal override scoring from white's perspective focused on stalemate-as-zero.
-  // Returns 0 for stalemate or obvious insufficient material, else null.
-  function mateFactorWhite(pos) {
+  // Returns 0 for stalemate/insufficient material/repetition, else null.
+  function mateFactorWhite(pos, options) {
     try {
+      const fastOnly = !!(options && options.fastOnly);
+      const repetitionInfo = options && options.repetitionInfo;
+      if (repetitionInfo && repetitionInfo.isDraw) {
+        if (repetitionInfo.markDraw) repetitionInfo.markDraw();
+        return 0;
+      }
       if (onlyTwoKings(pos.board)) return 0;
+      if (fastOnly) return null;
       const sideWhite = pos.stm === 'w';
       const pseudo = genMoves(pos);
       let hasLegal = false;
@@ -269,8 +332,32 @@
     return scored.map(s => s.m);
   }
 
-  function search(pos, depth, alpha, beta, nodesObj) {
+  function search(pos, depth, alpha, beta, nodesObj, ctx) {
     const sideWhite = pos.stm === 'w';
+    let repKey = null;
+    let prevRepCount = 0;
+    let repetitionInfo = null;
+    if (ctx && ctx.rep) {
+      repKey = ctx.rep.keyFn(pos);
+      prevRepCount = ctx.rep.counts.get(repKey) || 0;
+      const nextCount = prevRepCount + 1;
+      ctx.rep.counts.set(repKey, nextCount);
+      repetitionInfo = {
+        key: repKey,
+        isDraw: nextCount >= ctx.rep.threshold,
+        markDraw: () => ctx.rep.drawKeys.add(repKey)
+      };
+    }
+
+    const fastMate = mateFactorWhite(pos, { repetitionInfo, fastOnly: true });
+    if (fastMate !== null && fastMate !== undefined) {
+      if (ctx && ctx.rep && repKey) {
+        if (prevRepCount === 0) ctx.rep.counts.delete(repKey);
+        else ctx.rep.counts.set(repKey, prevRepCount);
+      }
+      return { score: sideWhite ? fastMate : -fastMate, pv: [] };
+    }
+
     // Generate and filter to legal moves (do not leave own king attacked)
     const pseudo = genMoves(pos);
     const legal = [];
@@ -284,17 +371,33 @@
       if (inCheck) {
         // Losing for side to move. Scale with remaining depth to prefer faster mates.
         const MATE = 1000000;
+        if (ctx && ctx.rep && repKey) {
+          if (prevRepCount === 0) ctx.rep.counts.delete(repKey);
+          else ctx.rep.counts.set(repKey, prevRepCount);
+        }
         return { score: - (MATE - depth), pv: [] };
+      }
+      if (ctx && ctx.rep && repKey) {
+        if (prevRepCount === 0) ctx.rep.counts.delete(repKey);
+        else ctx.rep.counts.set(repKey, prevRepCount);
       }
       return { score: 0, pv: [] };
     }
     if (depth === 0) {
       nodesObj.count++;
-      const mf = mateFactorWhite(pos);
+      const mf = mateFactorWhite(pos, { repetitionInfo, fastOnly: false });
       if (mf !== null && mf !== undefined) {
+        if (ctx && ctx.rep && repKey) {
+          if (prevRepCount === 0) ctx.rep.counts.delete(repKey);
+          else ctx.rep.counts.set(repKey, prevRepCount);
+        }
         return { score: sideWhite ? mf : -mf, pv: [] };
       }
       const baseEval = evaluate(pos.board);
+      if (ctx && ctx.rep && repKey) {
+        if (prevRepCount === 0) ctx.rep.counts.delete(repKey);
+        else ctx.rep.counts.set(repKey, prevRepCount);
+      }
       return { score: sideWhite ? baseEval : -baseEval, pv: [] };
     }
     const ordered = orderMoves(pos, legal);
@@ -305,7 +408,7 @@
       if (isKingAttacked(child, sideWhite)) {
         continue;
       }
-      const res = search(child, depth - 1, -beta, -alpha, nodesObj);
+      const res = search(child, depth - 1, -beta, -alpha, nodesObj, ctx);
       const curScore = -res.score; // negamax flip back for this ply
       if (curScore > best.score) {
         best.score = curScore;
@@ -314,6 +417,10 @@
       }
       alpha = Math.max(alpha, curScore);
       if (alpha >= beta) break; // alpha-beta cutoff
+    }
+    if (ctx && ctx.rep && repKey) {
+      if (prevRepCount === 0) ctx.rep.counts.delete(repKey);
+      else ctx.rep.counts.set(repKey, prevRepCount);
     }
     return best;
   }
@@ -325,9 +432,24 @@
     const requestedDepth = Math.max(1, (opts && (opts.searchDepth || opts.depth)) || 1);
     const nodesObj = { count: 0 };
     const baseEval = evaluate(pos.board);
-    const result = search(pos, requestedDepth, -1e9, 1e9, nodesObj);
+    const repTracker = buildRepetitionTracker(opts);
+    const ctx = { rep: repTracker };
+    if (ctx.rep) {
+      ctx.rep.rootKey = ctx.rep.keyFn(pos);
+      ctx.rep.rootBaseCount = ctx.rep.counts.get(ctx.rep.rootKey) || 0;
+    }
+    const result = search(pos, requestedDepth, -1e9, 1e9, nodesObj, ctx);
     if (!result.move) {
-      return { uci: null, score: baseEval, nodes: nodesObj.count, explain: 'No moves available.' };
+      const fallbackScore = (typeof result.score === 'number') ? result.score : baseEval;
+      return {
+        uci: null,
+        score: fallbackScore,
+        nodes: nodesObj.count,
+        explain: result.explain || 'No moves available.',
+        depth: requestedDepth,
+        pv: result.pv || [],
+        rootDrawByRepetition: !!(ctx.rep && ctx.rep.drawKeys && ctx.rep.drawKeys.has(ctx.rep.rootKey))
+      };
     }
     const afterEvalPos = applyMove(pos, result.move);
     let afterEval;
@@ -337,7 +459,15 @@
     const delta = sideWhite ? (afterEval - baseEval) : (baseEval - afterEval);
     const math = `depth=${requestedDepth} negamax material: base=${baseEval}cp, bestChildAfter=${afterEval}cp, immediateDelta=${delta}cp, nodes=${nodesObj.count}, pv=${result.pv.join(' ')}`;
     // Score reported as absolute (white perspective) like before: evaluate(after position)
-    return { uci: result.move.uci, score: afterEval, nodes: nodesObj.count, explain: math, depth: requestedDepth, pv: result.pv };
+    return {
+      uci: result.move.uci,
+      score: afterEval,
+      nodes: nodesObj.count,
+      explain: math,
+      depth: requestedDepth,
+      pv: result.pv,
+      rootDrawByRepetition: !!(ctx.rep && ctx.rep.drawKeys && ctx.rep.drawKeys.has(ctx.rep.rootKey))
+    };
   };
 
   // Insufficient material: most obvious case requested — only two kings remain
@@ -381,6 +511,9 @@
           }
         }
         const res = choose(fen, opts) || { uci: null, score: 0, nodes: 0, explain: 'no-result', depth: (opts && opts.searchDepth) || 1 };
+        if (res.rootDrawByRepetition) {
+          status = 'draw-repetition';
+        }
 
         // Optional candidate move dump for diagnostics (material disadvantage / draw-seeking behavior)
         let candidates = undefined;
