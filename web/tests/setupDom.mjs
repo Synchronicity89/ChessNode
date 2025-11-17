@@ -6,13 +6,20 @@ import url from 'node:url';
 export async function loadIndexHtml() {
   const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
   const htmlPath = path.resolve(__dirname, '..', 'index.html');
-  const html = readFileSync(htmlPath, 'utf8');
+  let html = readFileSync(htmlPath, 'utf8');
+
+  // In tests, prevent external fetch of engine-bridge2.js by stripping the script tag.
+  html = html.replace(/<script\s+src=["']engine-bridge2\.js["']><\/script>/i, '<script>/* engine bridge removed in tests */<\/script>');
 
   const dom = new JSDOM(html, {
     url: 'http://localhost/',
     runScripts: 'dangerously',
     resources: 'usable',
-    pretendToBeVisual: true
+    pretendToBeVisual: true,
+    // Flag the environment so index.html can skip asset checks under JSDOM
+    beforeParse(window) {
+      window.JSDOM_TEST_ENV = true;
+    }
   });
 
   // Wait for window load so inline script in index.html has run

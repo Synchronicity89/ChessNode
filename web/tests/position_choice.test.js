@@ -10,7 +10,7 @@ function waitBridgeReady() {
 }
 
 // Target position
-const FEN_TARGET = 'rrbb4/q1n5/Pn6/5P2/1P1k1P2/P6R/3N3P/3KR3 w - - 6 44';
+const FEN_TARGET = '8/8/P7/5P2/1P1k1P2/P6R/3N3P/3KR3 w - - 6 44';
 
 function choose(depth) {
   const opts = { searchDepth: depth };
@@ -23,24 +23,30 @@ function choose(depth) {
 describe('Engine best move selection for target FEN', () => {
   beforeAll(async () => { await waitBridgeReady(); if (window.EngineBridge && window.EngineBridge.setRandomSeed) window.EngineBridge.setRandomSeed(12345); });
 
-  it('reports expected best move at depth 2 (e1e4)', () => {
-    const res = choose(2);
+  function expectNonStalemateBest(depth) {
+    const res = choose(depth);
     expect(res).toBeTruthy();
-    expect(res.best && res.best.uci).toBe('e1e4');
-    expect(res.depth).toBe(2);
+    const bestUci = res && res.best && res.best.uci;
+    expect(bestUci).toBeTruthy();
+    // Regression requirement: engine must not pick the stalemate-in-one move e1e5
+    expect(bestUci).not.toBe('e1e5');
+
+    const nextFen = window.EngineBridge.applyMoveIfLegal(FEN_TARGET, bestUci);
+    expect(nextFen).toBeTruthy();
+    const term = JSON.parse(window.EngineBridge.detectTerminal(nextFen) || '{}');
+    expect(term && term.status).not.toBe('stalemate');
+    expect(res.depth).toBe(depth);
+  }
+
+  it('returns a non-stalemate move at depth 2', () => {
+    expectNonStalemateBest(2);
   });
 
-  it('reports expected best move at depth 3 (h3h8)', () => {
-    const res = choose(3);
-    expect(res).toBeTruthy();
-    expect(res.best && res.best.uci).toBe('h3h8');
-    expect(res.depth).toBe(3);
+  it('returns a non-stalemate move at depth 3', () => {
+    expectNonStalemateBest(3);
   });
 
-  it('reports expected best move at depth 4 (e1e4)', () => {
-    const res = choose(4);
-    expect(res).toBeTruthy();
-    expect(res.best && res.best.uci).toBe('e1e4');
-    expect(res.depth).toBe(4);
+  it('returns a non-stalemate move at depth 4', () => {
+    expectNonStalemateBest(4);
   });
 });

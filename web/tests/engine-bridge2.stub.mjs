@@ -19,6 +19,14 @@ export function installStubBridge(win) {
         explain: { math: 'Stub test EngineBridge for UI tests.' }
       });
     },
+    listLegalMoves2Ply(fen, optionsJson) {
+      // Minimal legal set sufficient for the UI tests.
+      // If stm is black (no flip), allow d7d5; if stm is white (flipped comms),
+      // include d2d4 so it flips back to d7d5 in board space.
+      const stm = (fen.split(' ')[1] || 'w');
+      const moves = stm === 'b' ? ['d7d5', 'e7e5'] : ['e2e4', 'd2d4'];
+      return JSON.stringify({ moves, nodesTotal: 1, ply: 2 });
+    },
     applyMoveIfLegal(fen, uci) {
       // Minimal: just toggle side-to-move so UI PGN logic advances.
       const parts = fen.split(' ');

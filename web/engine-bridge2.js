@@ -233,6 +233,27 @@
 
   const posToFEN = (pos) => `${encodeBoard(pos.board)} ${pos.stm} ${pos.castling || '-'} ${pos.ep || '-'} ${pos.half || '0'} ${pos.full || '1'}`;
 
+  // Terminal override scoring from white's perspective focused on stalemate-as-zero.
+  // Returns 0 for stalemate or obvious insufficient material, else null.
+  function mateFactorWhite(pos) {
+    try {
+      if (onlyTwoKings(pos.board)) return 0;
+      const sideWhite = pos.stm === 'w';
+      const pseudo = genMoves(pos);
+      let hasLegal = false;
+      for (const m of pseudo) { const child = applyMove(pos, m); if (!isKingAttacked(child, sideWhite)) { hasLegal = true; break; } }
+      if (!hasLegal) {
+        const inCheck = isKingAttacked(pos, sideWhite);
+        if (!inCheck) return 0; // stalemate
+        // For checkmates, let the main search terminal scoring handle (MATE-depth).
+        return null;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
   // Basic alpha-beta negamax style search (side to move maximizes its perspective).
   // We keep evaluation white-positive; for black we negate when comparing.
   function orderMoves(pos, moves) {
@@ -269,6 +290,10 @@
     }
     if (depth === 0) {
       nodesObj.count++;
+      const mf = mateFactorWhite(pos);
+      if (mf !== null && mf !== undefined) {
+        return { score: sideWhite ? mf : -mf, pv: [] };
+      }
       const baseEval = evaluate(pos.board);
       return { score: sideWhite ? baseEval : -baseEval, pv: [] };
     }
@@ -305,7 +330,9 @@
       return { uci: null, score: baseEval, nodes: nodesObj.count, explain: 'No moves available.' };
     }
     const afterEvalPos = applyMove(pos, result.move);
-    const afterEval = evaluate(afterEvalPos.board);
+    let afterEval;
+    const mfChild = mateFactorWhite(afterEvalPos);
+    if (mfChild !== null && mfChild !== undefined) afterEval = mfChild; else afterEval = evaluate(afterEvalPos.board);
     const sideWhite = pos.stm === 'w';
     const delta = sideWhite ? (afterEval - baseEval) : (baseEval - afterEval);
     const math = `depth=${requestedDepth} negamax material: base=${baseEval}cp, bestChildAfter=${afterEval}cp, immediateDelta=${delta}cp, nodes=${nodesObj.count}, pv=${result.pv.join(' ')}`;
@@ -360,28 +387,23 @@
         if (opts && opts.debugMoves && pos) {
           try {
             const sideWhite = pos.stm === 'w';
-            const baseEval = evaluate(pos.board);
+            const baseMf = mateFactorWhite(pos);
+            const baseEval = (baseMf !== null && baseMf !== undefined) ? baseMf : evaluate(pos.board);
             const pseudo = genMoves(pos);
             candidates = [];
             for (const m of pseudo) {
               const child = applyMove(pos, m);
               if (isKingAttacked(child, sideWhite)) continue; // skip illegal
-              let afterEval = evaluate(child.board);
-              // Treat immediate draw results (stalemate/insufficient) as 0 eval to reflect draw outcome preference
-              // This helps a side behind in material to prefer draw outcomes when available.
-              // Minimal terminal detection for child position
+              let afterEval;
+              const mf = mateFactorWhite(child);
+              // Map child terminal to status for diagnostics
               let childStatus = 'ok';
-              const childSideWhite = child.stm === 'w';
-              const childPseudo = genMoves(child);
-              let childLegal = false;
-              for (const cm of childPseudo) { const gch = applyMove(child, cm); if (!isKingAttacked(gch, childSideWhite)) { childLegal = true; break; } }
-              if (!childLegal) {
-                childStatus = isKingAttacked(child, childSideWhite) ? 'checkmate' : 'stalemate';
-              } else if (onlyTwoKings(child.board)) {
-                childStatus = 'draw-insufficient';
-              }
-              if (childStatus === 'stalemate' || childStatus === 'draw-insufficient') {
-                afterEval = 0;
+              if (mf !== null && mf !== undefined) {
+                childStatus = 'stalemate';
+                afterEval = mf; // 0
+              } else {
+                afterEval = evaluate(child.board);
+                if (onlyTwoKings(child.board)) childStatus = 'draw-insufficient';
               }
               const delta = sideWhite ? (afterEval - baseEval) : (baseEval - afterEval);
               candidates.push({ uci: m.uci, afterEval, delta, childStatus });
