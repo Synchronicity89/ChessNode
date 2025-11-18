@@ -5,13 +5,19 @@
   "license": "MIT",
   "scripts": {
     "test": "vitest run",
-    "test:stockfish-race": "node scripts/stockfish_promotion_race_test.js"
+    "test:stockfish-race": "node scripts/stockfish_promotion_race_test.js",
+    "build:addon": "node-gyp rebuild --directory server/native-addon",
+    "serve:fg": "node scripts/kill-port.js 8080 && npm run build:addon && node server/server.js",
+    "serve": "powershell -NoProfile -Command \"& { node scripts/kill-port.js 8080; npm run build:addon; Start-Process -WindowStyle Minimized -FilePath node -ArgumentList 'server/server.js' }\"",
+    "test:native": "node server/bin/native-castling-tests.js"
   },
   "dependencies": {
+    "express": "^4.19.2",
     "stockfish": "^16.0.0"
   },
   "devDependencies": {
     "jsdom": "^27.2.0",
+    "node-addon-api": "^7.1.1",
     "vitest": "^1.0.0"
   }
 }

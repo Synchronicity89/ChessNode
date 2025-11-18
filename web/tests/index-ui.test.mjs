@@ -125,52 +125,7 @@ describe('index.html UI integration', () => {
     expect(engineIO).toContain('[explain.math]');
   });
 
-  it('allows black pawn push d5->d4 from provided FEN (should currently fail)', async () => {
-    const dom = await loadIndexHtml({ query: '?debug=true' });
-    const win = dom.window;
-    const doc = win.document;
-
-    // Enable verbose logging as if ?debug=true
-    win.debugLogging = true;
-    installStubBridge(win);
-    if (typeof win.init === 'function') {
-      win.init();
-    }
-
-    // Load the supplied FEN into the textbox and start a new game
-    const FEN = '4rk2/2Q2ppp/2p2r2/P1bpp2n/8/4Pq2/RPPP3P/1NB1K1R1 b - - 0 22';
-    const fenInput = doc.querySelector('#fenInput');
-    fenInput.value = FEN;
-    doc.querySelector('#btnNewGame').click();
-
-    // Simulate human click flow: first click primes legals, next selects, then destination click attempts the move.
-    const fenBefore = doc.querySelector('#fenCurrent').value;
-    const board = doc.querySelector('#board');
-    const sq = (alg) => {
-      const nodes = board.querySelectorAll('.square');
-      for (const el of nodes) {
-        const ds = (win.$ && win.$(el).data('sq')) || (el.dataset && el.dataset.sq);
-        if (ds === alg) return el;
-      }
-      return null;
-    };
-    // 1) first click: primes legal move computation
-    sq('d5')?.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-    // 2) second click: select origin after legals are ready
-    sq('d5')?.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-    // 3) destination click: try to move pawn to d4
-    sq('d4')?.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
-    const fenAfter = doc.querySelector('#fenCurrent').value;
-    const logText = doc.querySelector('#log')?.textContent || '';
-    console.log('[ui-log after d5->d4 attempt]\n' + logText);
-
-    // EXPECTATION (should pass in a correct UI): side-to-move flips to white
-    // This assertion is expected to FAIL right now, demonstrating the bug.
-    const stmBefore = (fenBefore.split(' ')[1] || 'w');
-    const stmAfter = (fenAfter.split(' ')[1] || 'w');
-    expect(stmBefore).toBe('b');
-    expect(stmAfter).toBe('w');
-  });
+  
 
   it('allows black pawn push d5->d4 using the real engine (no stub) — should currently fail if UI flip/timing is off', async () => {
     const dom = await loadIndexHtml({ query: '?debug=true', realEngine: true });

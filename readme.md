@@ -299,5 +299,211 @@ Together they produce a system that is:
 - Verifiable
 - Evolutionary in design
 
+---
+
+## Bitboard JS Path & Native AVX2 Engine Scaffold
+
+Recent additions introduce a faster attack-detection layer and a native C++ engine scaffold:
+
+### JavaScript Bitboard Attacks (Default)
+- `web/engine-bridge2.js` now computes attacks using precomputed bitboard masks (pawns, knights, king) and ray scanning for sliders.
+- Legacy array-based attack logic retained; toggle via `EngineBridge.setLegacyAttack(true|false)`.
+- Provides immediate performance uplift for square safety checks (castling, check detection) without altering external API.
+
+### Native C++ Bitboard Core (AVX2 / WASM Ready)
+- Directory: `native/` contains `engine.cpp/.hpp` and `nnue.cpp/.hpp` stubs.
+- Features implemented: FEN parse, bitboard population, pawn/knight/king masks, sliding attacks, minimal king move generation, placeholder castling rights, depth-limited negamax, AVX2 popcount usage, NNUE stub hook.
+- Build with CMake:
+   ```powershell
+   # Native (MSVC example)
+   cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+   cmake --build native/build --config Release
+
+   # WASM (Emscripten)
+   emcmake cmake -S native -B native/build-wasm -DENABLE_AVX2=OFF -DCMAKE_BUILD_TYPE=Release
+   cmake --build native/build-wasm -j
+   ```
+- Exposed C ABI: `engine_choose(fen, depth)` returning a UCI move string (placeholder logic).
+
+### WASM Loader Stub
+- `web/engine-wasm-loader.js` attempts to fetch `wasm/engine-native.wasm` and will later bridge memory to the exported C ABI.
+- Current stub does not marshal strings (needs linear memory + UTF-8 helpers); integrate after first successful WASM build.
+
+### Next Steps / Expansion
+1. Complete move generation (done) and keep refining edge cases (promotions/EP/castling checks).
+ 2. Slider attacks: Magic bitboards now default (fast O(1) lookup). Optional compile flag `USE_PEXT_TABLES=ON` switches to exhaustive PEXT-style tables. Future BMI2 PEXT acceleration and classic alternative magic sets can be added trivially.
+### Build with Magic (default) vs PEXT tables
+
+Magic bitboards are the default. To enable the older PEXT-style exhaustive blocker enumeration tables instead:
+
+```powershell
+cmake -S native -B native/build -DUSE_PEXT_TABLES=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build native/build --config Release
+```
+
+For WASM (Magic default):
+
+```powershell
+emcmake cmake -S native -B native/build-wasm -DCMAKE_BUILD_TYPE=Release
+cmake --build native/build-wasm -j
+```
+
+With PEXT tables for WASM:
+
+```powershell
+emcmake cmake -S native -B native/build-wasm -DUSE_PEXT_TABLES=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build native/build-wasm -j
+```
+
+### Browser fallback hierarchy
+
+1. Server-native process (outside scope of this repo) – fastest when you host a dynamic page hitting a native engine service.
+2. Static page + WASM native engine loaded (Magic bitboards).
+3. Static page + partial (mixed JS/WASM) if some exports missing.
+4. Static page + pure JS bitboard engine.
+
+`web/engine-wasm-loader.js` automatically attempts to load `wasm/engine-native.wasm` and, if successful, patches `EngineBridge.chooseBestMove` to delegate to native.
+
+### Trying native through the GUI
+
+After building WASM (producing `web/wasm/engine-native.wasm`): open the UI page and call:
+
+```js
+EngineBridge.chooseBestMove('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', JSON.stringify({ searchDepth: 3 }))
+```
+
+The returned JSON will include `{ native: true, ... }` and the move will be placed asynchronously in `EngineBridge.nativeLast` once resolved. (The wrapper currently returns a JSON object containing a promise placeholder; forthcoming enhancement will directly return resolved data.)
+3. Implement pinned-piece aware legal generation and more efficient check evasion paths.
+4. Integrate a real NNUE pipeline (feature extraction: king squares, piece-square pairs, accumulator, clipped ReLU layers).
+5. Validate via perft against known positions (startpos, kiwipete, EP cases) and add a CLI to compare.
+6. Wire WASM memory bridging: allocate input buffer, write FEN, call `engine_choose`, read UCI string.
+7. Add benchmarking comparing legacy vs JS bitboard vs native WASM paths; surface nodes/time in the UI.
+
+---
+
 A chess engine that is not just played with — but **collaboratively built**.
+
+---
+
+## Chess960 (Fischer Random) Support Plan
+
+This section documents the scope and required changes to support Chess960 (Fischer Random) alongside the Standard Variant. The default remains Standard Variation Proper (no randomization). When Chess960 is selected with randomization off, the chosen starting position will be the standard arrangement (one of the 960 that coincides with the classic setup). When randomization is on, a legal Chess960 starting position is generated.
+
+### UI Controls
+- Mode selector: "Standard Variation Proper" | "Chess960".
+- If "Chess960" is selected:
+   - Enable a "Randomize" button to generate a random legal Chess960 start position.
+   - If Randomize is OFF, use a Chess960 start that matches the standard arrangement (king on e, queens/rooks/bishops/knights in the classic order) so the board looks identical to Standard.
+- Persist the chosen mode and position (e.g., via localStorage) and reflect the active position in the FEN/X-FEN box.
+
+### Notation: X-FEN (Extended FEN)
+To unambiguously represent castling rights and rook origins in Chess960, adopt X-FEN (also known as Shredder-FEN style):
+- Standard FEN `KQkq` castling availability is extended by encoding the rook files for castling rights instead of fixed `KQkq` only.
+   - Example: if White can castle kingside with the rook that started on file `h`, encode `H` (uppercase for White); if queenside rook started on `a`, encode `A`. Black uses lowercase (`h`, `a`).
+   - Thus a position might show castling rights as `HAha` instead of `KQkq`.
+- Backward compatibility: when the position is the standard arrangement, you may still emit `KQkq`. The parser should accept both classic FEN and X-FEN.
+
+Required engine/bridge changes:
+- Parser: Extend `parseFEN` to recognize X-FEN castling tokens (`[A-H][A-H][a-h][a-h]`) in addition to classic `KQkq`.
+- Encoder: When writing FEN from the current position, prefer X-FEN if the start position is Chess960; emit classic FEN if the position is exactly the standard arrangement.
+- Position state: Track the original rook files used for kingside/queenside castling rights for each side.
+
+### Castling Semantics in Chess960
+Official Chess960 rules define the final squares after castling as the same destination squares as standard chess:
+- White O-O: king to `g1`, rook to `f1`
+- White O-O-O: king to `c1`, rook to `d1`
+- Black O-O: king to `g8`, rook to `f8`
+- Black O-O-O: king to `c8`, rook to `d8`
+
+Key differences vs Standard:
+- Starting squares for king and rooks vary; the path the king/rook traverse during castling may be different.
+- All squares the king passes through must be unattacked; all traversed/intervening squares must be unoccupied except the king/rook that are moving; king/rook must not have moved previously; king may not be in check at start; these are identical in spirit to standard rules, applied to the variable path.
+
+Move generator changes:
+- For each side, determine the rook associated with kingside vs queenside castling from the stored original rook files (from X-FEN or from initial placement).
+- Compute the route squares and destination squares per Chess960:
+   - Compute destination squares as above (c/g for king; d/f for rook), relative to the side.
+   - Compute path squares between current king square and its destination, and the rook’s current square and its destination.
+   - Validate occupancy and attack conditions for king-path squares; ensure rook path is clear except its own current square.
+- Apply move: move king and rook to the fixed destination squares; clear castling rights accordingly.
+
+Evaluation/search changes:
+- Treat castling legality and resulting positions in the same way as Standard once the move is generated; evaluation should not assume fixed starting squares for king/rook.
+- Heuristics that reference “king safety” or “castling bonus” should not depend on specific starting files; instead, measure king safety features (pawn shelter, distance from center, etc.) after the move.
+
+### Color-Blind Layer and Presentation Mapping
+The UI includes a color-blind layer and a presentation layer that can depict the engine as playing Black while the logical color orientation may be flipped.
+
+Definitions for clarity:
+- Kingside = files `e` through `h` for that side; Queenside = files `a` through `d` (files, not ranks).
+- The color-blind layer abstracts orientation so that logic remains consistent regardless of board rotation or side depiction in the presentation layer.
+
+Practical handling:
+- Always compute castling in logical coordinates (color-blind layer):
+   - White: O-O → king to `g1`, rook to `f1`; O-O-O → king to `c1`, rook to `d1`.
+   - Black: O-O → king to `g8`, rook to `f8`; O-O-O → king to `c8`, rook to `d8`.
+- When the presentation depicts the engine as Black, the color-blind layer still uses the same file targets (`c/g` and `d/f`) and performs a visual transform (flip/rotate) for display only. This covers cases where a starting position has the white king to the left of the white queen (e.g., on file `d` while the queen is on `e`); castling remains defined by destination files, not by relative left/right of the queen in the UI.
+- Click-to-move helpers in the presentation layer should translate user input to logical coordinates before legality checks; castling buttons/shortcuts (if any) should trigger the same logical move generation.
+
+### Compatibility Surface Summary
+- UI:
+   - Add mode selector (Standard vs Chess960) and a Randomize button enabled only in Chess960 mode.
+   - Ensure FEN/X-FEN textbox and current position display reflect and accept X-FEN.
+   - Keep all rendering/selection orientation-agnostic via the color-blind layer.
+- Engine/Bridge:
+   - Extend FEN parser/encoder for X-FEN.
+   - Track original rook files for castling rights.
+   - Implement Chess960 castling generation and application using fixed destination squares (c/g and d/f).
+   - Maintain evaluation neutrality regarding starting files; focus on resulting position features.
+- Testing:
+   - Unit tests for X-FEN parse/encode round-trips (including mixed classic/X-FEN inputs).
+   - Castling legality tests across several Chess960 placements (both sides, both castles).
+   - UI integration tests for mode toggle, Randomize, and FEN application.
+
+### Migration Strategy
+1. Add X-FEN parser/encoder with fallback to classic FEN for the standard layout.
+2. Introduce mode selector + Randomize in the UI; plumb chosen start positions to the engine via X-FEN.
+3. Implement Chess960 castling in move generation and apply-move; keep standard rules intact.
+4. Expand tests to cover all of the above (parser, generator, UI flow).
+5. Validate with a set of known Chess960 starting positions and ensure encode/decode invariants.
+
+---
+
+## Castling: Standard vs Chess960 (Distances and Presentation)
+
+This clarifies how many squares the king moves during castling in both Standard Variant and Chess960, including when the engine is depicted as Black in the presentation layer and the king appears to the left of the queen.
+
+### Standard Variant
+- Final squares are fixed and the king always moves two squares:
+   - White O-O: `e1 → g1` (2 squares); rook `h1 → f1`.
+   - White O-O-O: `e1 → c1` (2 squares); rook `a1 → d1`.
+   - Black O-O: `e8 → g8` (2 squares); rook `h8 → f8`.
+   - Black O-O-O: `e8 → c8` (2 squares); rook `a8 → d8`.
+- Presentation note: Even if the UI depicts the engine as Black (board flipped), the underlying move remains exactly two king squares on both sides. The color-blind layer computes legality and destination on logical squares; the UI only rotates/reflects for display.
+
+### Chess960 (Fischer Random)
+- Final squares are the same as Standard (destination-based definition):
+   - O-O: king ends on file `g` (rank 1 for White, rank 8 for Black); rook ends on file `f`.
+   - O-O-O: king ends on file `c`; rook ends on file `d`.
+- Distance varies depending on the king’s starting file:
+   - Kingside: king moves from its start file to `g` → distance = `|startFileIndex − g|` (0–3 squares).
+   - Queenside: king moves from its start file to `c` → distance = `|startFileIndex − c|` (0–3 squares).
+- Examples (White on rank 1; Black analogous on rank 8):
+   - King starts on `d1` (to the left of `e1`/queen on `e1`):
+      - O-O: `d1 → g1` = 3 squares.
+      - O-O-O: `d1 → c1` = 1 square.
+   - King starts on `g1` already:
+      - O-O: `g1 → g1` = 0 squares (still a castling move; rook moves `f1` as usual).
+   - King starts on `c1` already:
+      - O-O-O: `c1 → c1` = 0 squares (still a castling move; rook moves `d1`).
+- Legality conditions mirror Standard, applied to the variable path: king and rook unmoved, king not in check, king’s path squares unattacked, and required path squares unoccupied (except the moving rook/king).
+
+### Depicted-as-Black (Presentation) Case
+- The UI may depict the engine as Black (board flipped) and you may see a starting arrangement where the “white” king appears to the left of the queen. The engine’s color-blind layer always evaluates in logical board coordinates:
+   - White castles: king to `g1`/`c1`; Black castles: king to `g8`/`c8`.
+   - Distances are computed on those logical files, independent of screen orientation.
+- Concretely, if the logical white king starts on `d1` (queen on `e1`) while the engine is depicted as Black:
+   - Queenside: king moves 1 square (`d1 → c1`).
+   - Kingside: king moves 3 squares (`d1 → g1`).
+- The presentation layer only transforms coordinates for display and clicks; it does not change how many squares the king moves or which squares are the legal destinations.
 

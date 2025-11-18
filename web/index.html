@@ -172,9 +172,19 @@
     </section>
     <section class="panel">
       <div class="controls">
+        <label>Mode
+          <select id="variantSelect">
+            <option value="standard">Standard</option>
+            <option value="chess960">Chess960</option>
+          </select>
+        </label>
+        <button id="btnRandom960" disabled>Randomize 960</button>
+        <button id="btnStdCastle">Std Castle Test</button>
         <label>Depth <input id="depth" type="number" value="2" min="1" max="12" style="width:48px;"></label>
-        <label>FEN <input id="fenInput" type="text" style="width:100%;" class="mono"
-            placeholder="Optional: paste FEN then New Game"></label>
+        <label>FEN
+          <textarea id="fenInput" class="mono" rows="2" style="width:100%; resize: vertical;"
+            placeholder="Optional: paste FEN then New Game"></textarea>
+        </label>
       </div>
       <div style="border:1px solid #e5b800; background:#fffbe6; padding:8px; border-radius:4px;">
         <strong>Workaround: Type Human Move</strong>
@@ -249,7 +259,9 @@
     let selectedSquare = null; // algebraic like 'e2'
     let sideToMove = 'w'; // updated from boardStateFen
     let legalHumanMoves = null; // array of board-space UCIs allowed for the human
+    let chess960CastleMoves = {}; // king square -> { kingside: 'uci', queenside: 'uci' }
     let lastEngineExplainRaw = '';
+    let fenHistory = []; // FEN history snapshots (initial position at index 0)
     // Tracing instrumentation (can be toggled via window.TRACE_MOVES)
     window.TRACE_MOVES = window.TRACE_MOVES !== undefined ? window.TRACE_MOVES : true;
     const TRACE_SQUARES = new Set(['e5','d5','d4','e4']);
@@ -435,12 +447,27 @@
         const newPlacement = rowsOut.join('/');
         const newSide = (side === 'w') ? 'b' : 'w';
 
-        const has = { K: false, Q: false, k: false, q: false };
+        // Castling rights transform for KQkq and X-FEN letters A-H/a-h with file mirroring
+        let outCastArr = [];
+        const addCast = (ch) => { if (!ch) return; outCastArr.push(ch); };
         for (const ch of (cast || '')) {
-          if (has.hasOwnProperty(ch)) has[ch] = true;
+          if (ch === 'K') addCast('k');
+          else if (ch === 'Q') addCast('q');
+          else if (ch === 'k') addCast('K');
+          else if (ch === 'q') addCast('Q');
+          else if (ch >= 'A' && ch <= 'H') {
+            const rf = ch.charCodeAt(0) - 65; // 0..7
+            const mr = 7 - rf;
+            addCast(String.fromCharCode(97 + mr)); // to lowercase mirrored file
+          } else if (ch >= 'a' && ch <= 'h') {
+            const rf = ch.charCodeAt(0) - 97;
+            const mr = 7 - rf;
+            addCast(String.fromCharCode(65 + mr)); // to uppercase mirrored file
+          }
         }
-        const newCast = (has.k ? 'K' : '') + (has.q ? 'Q' : '') + (has.K ? 'k' : '') + (has.Q ? 'q' : '');
-        const castOut = newCast || '-';
+        // de-duplicate while preserving order
+        const seen = new Set();
+        const outCast = outCastArr.filter(ch => (seen.has(ch) ? false : (seen.add(ch), true))).join('') || '-';
 
         let epOut = '-';
         if (ep && ep.length === 2 && /^[a-h][1-8]$/.test(ep)) {
@@ -451,7 +478,7 @@
           epOut = String.fromCharCode(97 + nf) + String.fromCharCode(49 + nr);
         }
 
-        return `${newPlacement} ${newSide} ${castOut} ${epOut} ${half} ${full}`;
+        return `${newPlacement} ${newSide} ${outCast} ${epOut} ${half} ${full}`;
       } catch {
         return fen;
       }
@@ -568,6 +595,19 @@
             }, '}');
           } catch {}
         }
+        // Add castling rook landing highlight squares in Standard when king selected
+        try {
+          const modeHL = ($('#variantSelect').val() || 'standard');
+          if (modeHL === 'standard' && selectedSquare) {
+            const sel = selectedSquare.toLowerCase();
+            if (sel === 'e1' || sel === 'e8') {
+              const ks = legalHumanMoves.includes(sel + 'g' + sel.slice(1)); // e1g1/e8g8
+              const qs = legalHumanMoves.includes(sel + 'c' + sel.slice(1)); // e1c1/e8c8
+              if (ks) destSet.add(sel === 'e1' ? 'f1' : 'f8');
+              if (qs) destSet.add(sel === 'e1' ? 'd1' : 'd8');
+            }
+          }
+        } catch {}
       }
 
       // Helper to get piece at an algebraic square from current FEN
@@ -783,14 +823,10 @@
       // Compute move token using pre-move FEN so piece detection is correct
       const san = simpleSanFromUci(boardUci, boardStateFen);
       const nextFen = fenApplyUciMove(boardStateFen, boardUci);
-      if (!nextFen) {
+      if (!applyMoveAndRecord(nextFen, san)) {
         logLine('ENGINE MOVE APPLY FAILED for uci=' + boardUci);
         return;
       }
-      updateBoardState(nextFen);
-      // Store moves as sequential halfmoves (always push)
-      gameMoves.push(san);
-      updatePgnBox();
 
       // After engine moves, compute legal human moves (2-ply prune)
       requestHumanLegalMoves2Ply();
@@ -814,16 +850,19 @@
         return;
       }
       let uciPresentation = fromSq + toSq; // based on provided squares
-      // Prefer matching whatever space matches the known legal set: when the board is rotated,
-      // try flipped (board-space) first, but also allow raw presentation-space if it matches.
+      // Always prefer the direct UCI constructed from the provided squares.
+      // If that doesn't match the legal set (e.g., caller passed presentation-space coords),
+      // fall back to the 180°-flipped version.
       const uciFlipped = flipMoveUci180(uciPresentation);
-      const prefer = isBoardRotated() ? [uciFlipped, uciPresentation] : [uciPresentation, uciFlipped];
+      const prefer = [uciPresentation, uciFlipped];
       let uci = prefer[0];
       traceLog('move.candidates', { prefer, chosenInitial: uci, legalsLen: legalHumanMoves.length });
+      try { if (debugLogging) console.log('[ui] tryHumanMove candidates', { prefer, legalsLen: legalHumanMoves.length }); } catch {}
       // Diagnostic: show move candidates and current legal set head
       try {
         const head = (legalHumanMoves || []).slice(0, 12).join(' ');
         logLine('HUMAN candidate(s): ' + prefer.join(' | ') + ' | legals[0..11]: ' + head);
+        if (debugLogging) console.log('[ui] legals head', head);
       } catch {}
       // Promotion handling: if pawn reaches last rank, append promotion piece (default 'q').
       try {
@@ -853,6 +892,7 @@
         }
       } catch {}
       logLine('HUMAN (' + (humanColor === 'w' ? 'white' : 'black') + ') MOVE REQUEST: ' + uciPresentation + ' (board-candidate=' + uci + ')');
+      try { if (debugLogging) console.log('[ui] includes direct?', legalHumanMoves.includes(uciPresentation), 'includes flipped?', legalHumanMoves.includes(uciFlipped)); } catch {}
       if (!legalHumanMoves.includes(uci)) {
         // Try alternate candidate if first choice not legal
         const alt = prefer[1];
@@ -862,6 +902,23 @@
           uci = alt;
           traceLog('move.alt.accept', { accepted: uci });
         }
+      }
+      // Handle flipped-engine castling alias in Standard mode: only kingside needs alias mapping
+      if (!legalHumanMoves.includes(uci)) {
+        try {
+          const from = uciPresentation.slice(0,2).toLowerCase();
+          const to = uciPresentation.slice(2,4).toLowerCase();
+          const isStdRank = (from === 'e1' || from === 'e8');
+          const isKingside = (to === 'g1' || to === 'g8');
+          if (isStdRank && isKingside) {
+            const alias = (from === 'e1' ? 'e1b1' : 'e8b8');
+            if (legalHumanMoves.includes(alias)) {
+              logLine('HUMAN castling alias matched; accepting ' + uciPresentation + ' via alias ' + alias);
+              // Keep applying the original board move so rook relocation logic triggers correctly
+              uci = uciPresentation;
+            }
+          }
+        } catch {}
       }
       if (!legalHumanMoves.includes(uci)) {
         // Extra diagnostics to understand mismatches
@@ -889,7 +946,19 @@
             // Prefer board-space intended move first
             const intended = prefer[0];
             const alt2 = prefer[1];
-            const chosen = boardMoves.includes(intended) ? intended : (boardMoves.includes(alt2) ? alt2 : null);
+            let alias2 = null;
+            try {
+              const from0 = intended.slice(0,2).toLowerCase();
+              const to0 = intended.slice(2,4).toLowerCase();
+              const isStdRank0 = (from0 === 'e1' || from0 === 'e8');
+              const isKing0 = (to0 === 'g1' || to0 === 'g8');
+              if (isStdRank0 && isKing0) {
+                alias2 = (from0 === 'e1' ? 'e1b1' : 'e8b8');
+              }
+            } catch {}
+            const chosen = boardMoves.includes(intended) ? intended
+                         : (boardMoves.includes(alt2) ? alt2
+                         : (alias2 && boardMoves.includes(alias2) ? intended : null));
             if (chosen) {
               const san = simpleSanFromUci(chosen, boardStateFen);
               const nextFen = fenApplyUciMove(boardStateFen, chosen);
@@ -920,29 +989,35 @@
         traceLog('move.apply.failed', { uci });
         return;
       }
-      updateBoardState(nextFen);
+      applyMoveAndRecord(nextFen, san);
       selectedSquare = null;
       // Clear legals until engine replies and we recompute
       legalHumanMoves = null;
-      // Always push halfmove
-      gameMoves.push(san);
-      updatePgnBox();
+      try { logLine('HUMAN move applied: ' + uci + ' | FEN: ' + nextFen); } catch {}
+      try { if (debugLogging) console.log('[ui] human move applied', { uci, fen: nextFen }); } catch {}
       traceLog('move.apply.success', { uci, san, nextFen });
     }
 
     function newGame() {
       debugCall('newGame');
 
-      const fenText = ($('#fenInput').val() || '').toString().trim() || START_FEN;
+      const mode = ($('#variantSelect').val() || 'standard');
+      let fenText = ($('#fenInput').val() || '').toString().trim();
+      if (!fenText) {
+        fenText = (mode === 'chess960') ? generateChess960Start() : START_FEN;
+        const $fenIn = $('#fenInput'); if ($fenIn.length) $fenIn.val(fenText);
+      }
       boardFlipped = engineIsWhite; // bottom side is human color
       humanIsBlack = engineIsWhite; // if engine plays black, human is white
       gameMoves = [];
+      fenHistory = [];
       $('#humanSideLabel').text(engineIsWhite ? 'black (presentation)' : 'white (presentation)');
 
       selectedSquare = null;
       updateBoardState(fenText);
       updatePgnBox();
       setEngineIO('');
+      fenHistory.push(boardStateFen);
 
       // If human starts, precompute legal moves
       syncSideToMoveFromFen();
@@ -967,6 +1042,45 @@
       logLine('Board visual flipped 180 degrees.');
     }
 
+    function applyMoveAndRecord(nextFen, sanToken) {
+      if (!nextFen) return false;
+      updateBoardState(nextFen);
+      fenHistory.push(nextFen);
+      if (sanToken) gameMoves.push(sanToken);
+      updatePgnBox();
+      return true;
+    }
+
+    function undoLast() {
+      debugCall('undoLast');
+      if (fenHistory.length <= 1) { logLine('Undo: nothing to revert.'); return; }
+      const humanColor = engineIsWhite ? 'b' : 'w';
+      if (sideToMove === humanColor) {
+        // engine just moved; undo two halfmoves if possible
+        if (fenHistory.length >= 3) {
+          fenHistory.splice(-2);
+          gameMoves.splice(-2);
+        } else {
+          fenHistory.splice(-1);
+          gameMoves.splice(-1);
+        }
+      } else {
+        // human just moved; undo one
+        fenHistory.splice(-1);
+        gameMoves.splice(-1);
+      }
+      const restored = fenHistory[fenHistory.length - 1];
+      boardStateFen = restored;
+      currentFen = restored;
+      syncSideToMoveFromFen();
+      renderBoard();
+      engineEvaluateFen();
+      updatePgnBox();
+      logLine('Undo completed. Side to move: ' + sideToMove);
+      const humanColorNow = engineIsWhite ? 'b' : 'w';
+      if (sideToMove === humanColorNow) requestHumanLegalMoves2Ply();
+    }
+
     function init() {
       debugCall('init');
 
@@ -989,6 +1103,40 @@
       $('#btnEngineMove').on('click', function () {
         debugCall('btnEngineMove.click');
         engineChooseBestMove();
+      });
+      // Inject Undo button after Engine Move
+      $('<button id="btnUndo">Undo</button>').insertAfter('#btnEngineMove').on('click', function(){
+        debugCall('btnUndo.click');
+        undoLast();
+      });
+
+      // Variant selection and randomize 960
+      function syncRandomizeButton() {
+        const is960 = ($('#variantSelect').val() || 'standard') === 'chess960';
+        const $btn = $('#btnRandom960'); if ($btn.length) $btn.prop('disabled', !is960);
+      }
+      $('#variantSelect').on('change', function(){
+        syncRandomizeButton();
+      });
+      $('#btnRandom960').on('click', function(){
+        const fen960 = generateChess960Start();
+        const $fenIn = $('#fenInput'); if ($fenIn.length) $fenIn.val(fen960);
+        logLine('Generated Chess960 start (X-FEN): ' + fen960);
+      });
+      // Load a Standard-mode castling test FEN with all rights enabled
+      $('#btnStdCastle').on('click', function(){
+        try {
+          $('#variantSelect').val('standard');
+          const humanColor = engineIsWhite ? 'b' : 'w';
+          const side = humanColor; // ensure it's the human's turn
+          // Use X-FEN castling rights for Standard: A/H for white rooks, a/h for black rooks
+          const fenStdCastle = `r3k2r/8/8/8/8/8/8/R3K2R ${side} AHah - 0 1`;
+          const $fenIn = $('#fenInput'); if ($fenIn.length) $fenIn.val(fenStdCastle);
+          logLine('Loaded Standard castling test FEN: ' + fenStdCastle);
+          newGame();
+          // Proactively compute legals for human so castle squares highlight
+          requestHumanLegalMoves2Ply();
+        } catch(e){ logLine('Std Castle Test setup failed: ' + e); }
       });
 
       // Fallback typed human move handler
@@ -1066,6 +1214,42 @@
 
         // If clicking another human piece while a selection is active, switch selection
         if (isHumanPiece) {
+          // Chess960 castling gesture: king then rook click triggers castling
+          try {
+            const mode = ($('#variantSelect').val() || 'standard');
+            if (mode === 'chess960' && selectedSquare) {
+              function getPieceAtFen(sq){ const placement=(boardStateFen||'').split(' ')[0]||''; const rows=placement.split('/'); if(rows.length!==8) return '.'; const f=sq.charCodeAt(0)-97; const r=sq.charCodeAt(1)-49; if(f<0||f>7||r<0||r>7) return '.'; const rr=7-r; let cc=0; for(const ch of rows[rr]){ if(/^[1-8]$/.test(ch)){ cc+=parseInt(ch,10);} else { if(cc===f) return ch; cc++; } } return '.'; }
+              const pieceSel = getPieceAtFen(selectedSquare);
+              const pieceClicked = getPieceAtFen(sq);
+              if (pieceSel && pieceClicked && pieceSel.toLowerCase()==='k' && pieceClicked.toLowerCase()==='r') {
+                const sameColor = (pieceSel===pieceSel.toUpperCase()) === (pieceClicked===pieceClicked.toUpperCase());
+                if (sameColor) {
+                  const entry = chess960CastleMoves[selectedSquare];
+                  if (entry) {
+                    const kFile = selectedSquare.charCodeAt(0);
+                    const rFile = sq.charCodeAt(0);
+                    const moveUci = (rFile > kFile) ? entry.kingside : entry.queenside;
+                    if (moveUci) {
+                      logLine('Chess960 castling gesture: ' + selectedSquare + ' then ' + sq + ' -> ' + moveUci);
+                      const san = simpleSanFromUci(moveUci, boardStateFen);
+                      const nextFen = fenApplyUciMove(boardStateFen, moveUci);
+                      if (nextFen) {
+                        updateBoardState(nextFen);
+                        gameMoves.push(san);
+                        updatePgnBox();
+                        selectedSquare = null;
+                        requestHumanLegalMoves2Ply();
+                        traceLog('chess960.castle.applied', { moveUci, nextFen });
+                        return; // consumed
+                      } else {
+                        logLine('Chess960 castling apply failed for move ' + moveUci);
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } catch {}
           selectedSquare = sq;
           // Reset Workaround textbox to new origin square
           try {
@@ -1132,14 +1316,22 @@
     function performHumanClickMove(fromSq, toSq, evtOrOpts) {
       try {
         debugCall('performHumanClickMove');
+        try { console.log('[test-diag] performHumanClickMove invoked', { fromSq, toSq }); } catch {}
+        try { logLine('performHumanClickMove: request from ' + fromSq + ' to ' + toSq); } catch {}
         // If legals aren't computed yet (e.g., new FEN just loaded), get them now.
         if (!Array.isArray(legalHumanMoves) || legalHumanMoves.length === 0) {
           requestHumanLegalMoves2Ply();
         }
         const fenBefore = boardStateFen;
-        tryHumanMove(fromSq, toSq, evtOrOpts);
+        try {
+          tryHumanMove(fromSq, toSq, evtOrOpts);
+        } catch (err) {
+          try { logLine('performHumanClickMove: tryHumanMove threw: ' + err); } catch {}
+        }
+        try { logLine('performHumanClickMove: fenBefore=' + fenBefore + ' | fenAfter=' + boardStateFen); } catch {}
         return boardStateFen;
-      } catch {
+      } catch (e){
+        try { logLine('performHumanClickMove: unexpected error: ' + e); } catch {}
         return boardStateFen;
       }
     }
@@ -1191,6 +1383,10 @@
           init();
         });
       }
+      // Initialize variant UI state
+      (function(){ try { const v = localStorage.getItem('variantSelect'); if (v) $('#variantSelect').val(v); } catch{}; })();
+      try { if (typeof syncRandomizeButton === 'function') { syncRandomizeButton(); } } catch {}
+      $('#variantSelect').on('change', function(){ try { localStorage.setItem('variantSelect', $('#variantSelect').val()); } catch{} });
     });
 
     // Expose selected helpers for tests/automation
@@ -1255,16 +1451,62 @@
       }
       // Flip moves back to board space if needed
       const rawMoves = obj.moves || [];
-      legalHumanMoves = flipComm ? rawMoves.map(flipMoveUci180) : rawMoves.slice();
+      let movesBoard = flipComm ? rawMoves.map(flipMoveUci180) : rawMoves.slice();
+      // Castling post-processing: Standard canonicalization; Chess960 gesture extraction
+      try {
+        const mode = ($('#variantSelect').val() || 'standard');
+        chess960CastleMoves = {}; // reset each computation
+        if (mode === 'standard' && Array.isArray(movesBoard)) {
+          const mapped = [];
+          for (const m of movesBoard) {
+            if (typeof m !== 'string' || m.length < 4) { mapped.push(m); continue; }
+            const from = m.slice(0,2).toLowerCase();
+            const to = m.slice(2,4).toLowerCase();
+            if (from === 'e1') {
+              if (to === 'b1') { mapped.push('e1g1'); continue; }
+              if (to === 'f1') { mapped.push('e1c1'); continue; }
+            } else if (from === 'e8') {
+              if (to === 'b8') { mapped.push('e8g8'); continue; }
+              if (to === 'f8') { mapped.push('e8c8'); continue; }
+            }
+            mapped.push(m);
+          }
+          const seen = new Set();
+          movesBoard = mapped.filter(x => (seen.has(x) ? false : (seen.add(x), true)));
+        } else if (mode === 'chess960' && Array.isArray(movesBoard)) {
+          const retained = [];
+          for (const m of movesBoard) {
+            if (typeof m === 'string' && m.length >= 4) {
+              const from = m.slice(0,2);
+              const to = m.slice(2,4);
+              if (/^[a-h][1-8]$/.test(from) && /^[a-h][1-8]$/.test(to)) {
+                const toFile = to.charAt(0);
+                if (toFile === 'c' || toFile === 'g') {
+                  const entry = chess960CastleMoves[from] || { kingside: null, queenside: null };
+                  if (toFile === 'g') entry.kingside = m;
+                  if (toFile === 'c') entry.queenside = m;
+                  chess960CastleMoves[from] = entry;
+                  continue; // remove from legals, must use king+rook gesture
+                }
+              }
+            }
+            retained.push(m);
+          }
+          movesBoard = retained;
+          try { logLine('Chess960 castle gesture moves captured: ' + JSON.stringify(chess960CastleMoves)); } catch {}
+        }
+      } catch {}
+      legalHumanMoves = movesBoard;
       logLine('Legal moves ready: ' + legalHumanMoves.length + ' moves (computed in ' + (t1 - t0).toFixed(1) + ' ms)');
       try {
-        const sample = (legalHumanMoves || []).slice(0, 20).join(' ');
-        logLine('Legal (board-space) sample: ' + sample);
+        const listStr = (legalHumanMoves || []).join(' ');
+        logLine('Legal (board-space) list: ' + listStr);
+        if (debugLogging) console.log('[ui] legals list', listStr);
       } catch {}
       renderBoard();
     }
 
-    // General-purpose FEN move applier (basic: no legality, no captures accounting beyond placement change)
+    // General-purpose FEN move applier (handles EP + castling rook relocation)
     function fenApplyUciMove(fen, uci) {
       try {
         if (!fen || !uci || uci.length < 4) return null;
@@ -1282,18 +1524,217 @@
         function sqToCoords(sq){ if(!sq||sq.length!==2) return null; const f=sq.charCodeAt(0)-97; const r=sq.charCodeAt(1)-49; if(f<0||f>7||r<0||r>7) return null; return {r:7-r,c:f}; }
         function parseBoard(p){ const ranks=p.split('/'); const b=Array.from({length:8},()=>Array(8).fill('.')); for(let rr=0; rr<8; rr++){ let cc=0; for(const ch of ranks[rr]){ if(/^[1-8]$/.test(ch)){ cc+=parseInt(ch,10);} else { if(cc<8) b[rr][cc++]=ch; } } } return b; }
         function encodeBoard(b){ const out=[]; for(let rr=0; rr<8; rr++){ let row=''; let empty=0; for(let cc=0; cc<8; cc++){ const p=b[rr][cc]; if(p==='.') empty++; else { if(empty){ row+=String(empty); empty=0;} row+=p; } } if(empty) row+=String(empty); out.push(row);} return out.join('/'); }
+        function stripCastlingForSide(castStr, stm){ if(!castStr || castStr==='-') return '-'; let filtered=''; for(const ch of castStr){ if(stm==='w'){ if(!(ch>='A' && ch<='Z')) filtered+=ch; } else { if(!(ch>='a' && ch<='z')) filtered+=ch; } } return filtered || '-'; }
         const board=parseBoard(placement);
         const fromC=sqToCoords(from); const toC=sqToCoords(to);
         if(!fromC||!toC) return null;
         const piece=board[fromC.r][fromC.c]; if(piece==='.') return null;
-        board[toC.r][toC.c]= promo ? (side==='w'?promo.toUpperCase():promo.toLowerCase()): piece;
+
+        // Detect castling (king move on same rank to c- or g-file). Handles Standard and Chess960.
+        const isKing = piece.toLowerCase()==='k';
+        const isSameRank = fromC.r===toC.r;
+        const isCastleDest = (toC.c===6 || toC.c===2);
+        if (isKing && isSameRank && isCastleDest) {
+          const moverIsWhite = (piece===piece.toUpperCase());
+          const r = fromC.r;
+          const rookChar = moverIsWhite ? 'R' : 'r';
+          const isKingside = (toC.c===6);
+          const rookDestC = isKingside ? 5 : 3; // f or d
+          // Find participating rook on the appropriate side of the king
+          let rookOrigC = null;
+          if (isKingside) {
+            for (let c = 7; c > fromC.c; c--) {
+              if (board[r][c] === rookChar) { rookOrigC = c; break; }
+            }
+          } else {
+            for (let c = fromC.c - 1; c >= 0; c--) {
+              if (board[r][c] === rookChar) { rookOrigC = c; break; }
+            }
+          }
+          // Move king and rook
+          board[fromC.r][fromC.c] = '.';
+          board[toC.r][toC.c] = piece;
+          if (rookOrigC !== null) {
+            board[r][rookOrigC] = '.';
+          }
+          board[r][rookDestC] = rookChar;
+
+          const newPlacement = encodeBoard(board);
+          const newSide = side==='w' ? 'b':'w';
+          const newCast = stripCastlingForSide(cast, side);
+          let epOut = '-';
+          if(side==='b') full += 1; // increment after black move
+          try { logLine('fenApplyUciMove: CASTLING applied ' + from + to + ' -> placement=' + newPlacement); } catch {}
+          try { if (debugLogging) console.log('[ui] fenApplyUciMove CASTLE', { uci, from, to, newPlacement }); } catch {}
+          return `${newPlacement} ${newSide} ${newCast} ${epOut} ${half} ${full}`;
+        }
+
+        // Detect en passant capture: pawn moves diagonally to ep target and destination is empty
+        const isPawn = piece.toLowerCase()==='p';
+        const diagMove = fromC.c!==toC.c;
+        const isEpTarget = (ep && ep!=='-' && ep===to);
+        if (isPawn && diagMove && isEpTarget && board[toC.r][toC.c]==='.') {
+          const moverIsWhite = (piece===piece.toUpperCase());
+          const capR = toC.r + (moverIsWhite ? 1 : -1);
+          const capC = toC.c;
+          if (capR>=0 && capR<8) board[capR][capC]='.'; // remove the passed pawn
+        }
+
+        // Move piece and apply promotion if any
         board[fromC.r][fromC.c]='.';
+        const placed = promo ? (side==='w'?promo.toUpperCase():promo.toLowerCase()) : piece;
+        board[toC.r][toC.c]= placed;
+
+        // Compute en passant target for next move: only after a double pawn push
+        let epOut = '-';
+        if (isPawn && Math.abs(toC.r - fromC.r)===2) {
+          const midR = (toC.r + fromC.r)/2;
+          epOut = String.fromCharCode(97 + fromC.c) + String.fromCharCode(49 + (7-midR));
+        }
+
         const newPlacement=encodeBoard(board);
         const newSide = side==='w' ? 'b':'w';
         if(side==='b') full += 1; // increment after black move
-        return `${newPlacement} ${newSide} ${cast} - ${half} ${full}`;
+        // If king moved (non-castling), strip that side's castling rights as a minimal correctness update
+        let newCast = cast;
+        if (isKing) newCast = stripCastlingForSide(cast, side);
+        return `${newPlacement} ${newSide} ${newCast} ${epOut} ${half} ${full}`;
       } catch(e){ logLine('fenApplyUciMove error: '+e); return null; }
     }
+  </script>
+  <script>
+    // Chess960 generator with X-FEN castling letters
+    function generateChess960Start() {
+      function randInt(n){ return Math.floor(Math.random() * n); }
+      const files = Array.from({length:8}, (_,i)=>i);
+      const back = new Array(8).fill(null);
+      // Bishops on opposite colors: even and odd files
+      const evenFiles = [0,2,4,6];
+      const oddFiles = [1,3,5,7];
+      const b1 = evenFiles[randInt(evenFiles.length)];
+      back[b1] = 'B'; files.splice(files.indexOf(b1),1);
+      const b2 = oddFiles[randInt(oddFiles.length)];
+      back[b2] = 'B'; files.splice(files.indexOf(b2),1);
+      // Queen
+      const qIdx = files[randInt(files.length)];
+      back[qIdx] = 'Q'; files.splice(files.indexOf(qIdx),1);
+      // Knights (two)
+      const n1 = files[randInt(files.length)]; back[n1] = 'N'; files.splice(files.indexOf(n1),1);
+      const n2 = files[randInt(files.length)]; back[n2] = 'N'; files.splice(files.indexOf(n2),1);
+      // Remaining three slots: place rooks at min/max, king in the middle to ensure king between rooks
+      files.sort((a,b)=>a-b);
+      const rL = files[0], kF = files[1], rR = files[2];
+      back[rL] = 'R'; back[kF] = 'K'; back[rR] = 'R';
+      // Build rows
+      const rowWhite = back.map(ch=>ch||'.').join('').replace(/\.+/g, m=>String(m.length));
+      const rowBlack = back.map(ch=>ch.toLowerCase()).join('').replace(/\.+/g, m=>String(m.length));
+      const pawnsWhite = 'PPPPPPPP';
+      const pawnsBlack = 'pppppppp';
+      const empty = '8';
+      const placement = [rowBlack, pawnsBlack, empty, empty, empty, empty, pawnsWhite, rowWhite].join('/');
+      // X-FEN castling letters: rook files for both sides
+      const wRookFiles = [rL, rR];
+      const bRookFiles = [rL, rR]; // symmetric file indices for black
+      const castWhite = wRookFiles.map(f=>String.fromCharCode(65 + f)).join('');
+      const castBlack = bRookFiles.map(f=>String.fromCharCode(97 + f)).join('');
+      const castling = (castWhite + castBlack) || '-';
+      return `${placement} w ${castling} - 0 1`;
+    }
+  </script>
+  <script>
+    // Prefer server-native engine when running from our Express server
+    (function(){
+      const SERVER_HEALTH = '/engine/health';
+      const CHOOSE_URL = '/engine/choose';
+      const LEGAL_URL = '/engine/legal';
+      function patchToServerNative(){
+        if (!window.EngineBridge || window.EngineBridge._serverNativePatched) return;
+        const originalChoose = window.EngineBridge.chooseBestMove && window.EngineBridge.chooseBestMove.bind(window.EngineBridge);
+        const originalList = window.EngineBridge.listLegalMoves && window.EngineBridge.listLegalMoves.bind(window.EngineBridge);
+        const originalApply = window.EngineBridge.applyMoveIfLegal && window.EngineBridge.applyMoveIfLegal.bind(window.EngineBridge);
+        function chooseViaServerNative(fen, optionsJson){
+          try {
+            let depth = 2;
+            try { if (optionsJson) { const opts = JSON.parse(optionsJson); depth = (opts.searchDepth||opts.depth||2)|0; } } catch{}
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', CHOOSE_URL, false); // synchronous to match existing UI expectations
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.send(JSON.stringify({ fen, depth }));
+            if (xhr.status >= 200 && xhr.status < 300) {
+              const r = JSON.parse(xhr.responseText||'{}');
+              const uci = (r && typeof r.move === 'string' && r.move.length >= 4) ? r.move : null;
+              if (!uci && originalChoose) {
+                // Fallback to original JS engine if server returns no move
+                return originalChoose(fen, optionsJson);
+              }
+              const out = {
+                depth,
+                nodesTotal: (typeof r.nodes === 'number' ? r.nodes : 0),
+                best: { uci, score: (typeof r.score === 'number' ? r.score : null) },
+                pv: Array.isArray(r.pv) ? r.pv : [],
+                status: 'ok',
+                explain: { base: null }
+              };
+              return JSON.stringify(out);
+            }
+          } catch(e){ /* fallthrough to original */ }
+          return originalChoose ? originalChoose(fen, optionsJson) : JSON.stringify({ error: 'no-engine' });
+        }
+        function listLegalViaServerNative(fen, fromSq, optionsJson){
+          try {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', LEGAL_URL, false);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.send(JSON.stringify({ fen }));
+            if (xhr.status >= 200 && xhr.status < 300) {
+              const r = JSON.parse(xhr.responseText||'{}');
+              let moves = Array.isArray(r.moves) ? r.moves : [];
+              // Wrap into objects expected by UI, and filter by fromSq if provided
+              moves = moves.map(u => ({ uci: String(u), from: String(u).slice(0,2), to: String(u).slice(2,4) }));
+              if (fromSq) moves = moves.filter(m => m.from === fromSq);
+              return JSON.stringify({ moves });
+            }
+          } catch(e){ /* fall through */ }
+          return originalList ? originalList(fen, fromSq, optionsJson) : JSON.stringify({ moves: [] });
+        }
+        function applyIfLegalViaServerNative(fen, uci, optionsJson){
+          try {
+            // Ask native for legal set; only allow if present
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', LEGAL_URL, false);
+            xhr.setRequestHeader('Content-Type', 'application/json');
+            xhr.send(JSON.stringify({ fen }));
+            if (xhr.status >= 200 && xhr.status < 300) {
+              const r = JSON.parse(xhr.responseText||'{}');
+              const arr = Array.isArray(r.moves) ? r.moves : [];
+              if (arr.includes(uci)) {
+                return originalApply ? originalApply(fen, uci, optionsJson) : null;
+              }
+              return null; // reject move not in native legal set
+            }
+          } catch(e){ /* fallback */ }
+          // If native unavailable, fall back to original behavior
+          return originalApply ? originalApply(fen, uci, optionsJson) : null;
+        }
+        window.EngineBridge.chooseBestMove = chooseViaServerNative;
+        if (window.EngineBridge.listLegalMoves) window.EngineBridge.listLegalMoves = listLegalViaServerNative;
+        if (window.EngineBridge.applyMoveIfLegal) window.EngineBridge.applyMoveIfLegal = applyIfLegalViaServerNative;
+        window.EngineBridge._serverNativePatched = true;
+        try { document.getElementById('engineSideLabel').textContent = 'white (native-server)'; } catch{}
+        console.log('[engine] Using server-native engine by default');
+      }
+      // Probe server health with a short timeout, then patch EngineBridge
+      (function probeAndPatch(){
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(()=>ctrl.abort(), 500);
+          fetch(SERVER_HEALTH, { method:'GET', signal: ctrl.signal }).then(res=>{
+            clearTimeout(t);
+            if (res && res.ok) patchToServerNative();
+          }).catch(()=>{/* ignore: stay on JS path */});
+        } catch {/* ignore */}
+      })();
+    })();
   </script>
 </body>
 

@@ -9,11 +9,9 @@ export async function loadIndexHtml(options) {
   let html = readFileSync(htmlPath, 'utf8');
   const useRealEngine = !!(options && options.realEngine);
 
-  // In tests, prevent external fetch of engine-bridge2.js by stripping the script tag,
-  // unless caller explicitly requests the real engine to be inlined.
-  if (!useRealEngine) {
-    html = html.replace(/<script\s+src=["']engine-bridge2\.js["']><\/script>/i, '<script>/* engine bridge removed in tests */<\/script>');
-  }
+  // In tests, always prevent external fetch of engine-bridge2.js by stripping the script tag.
+  // We will inline/eval the engine code below if requested via realEngine=true.
+  html = html.replace(/<script\s+src=["']engine-bridge2\.js["']><\/script>/i, '<script>/* engine bridge removed in tests */<\/script>');
 
   const query = (options && options.query) ? options.query : '';
   const dom = new JSDOM(html, {
@@ -24,6 +22,8 @@ export async function loadIndexHtml(options) {
     // Flag the environment so index.html can skip asset checks under JSDOM
     beforeParse(window) {
       window.JSDOM_TEST_ENV = true;
+      // Disable verbose trace logging in tests to keep output readable
+      window.TRACE_MOVES = false;
     }
   });
 
