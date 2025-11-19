@@ -6,6 +6,9 @@ node_modules/
 logs/
 *.log
 
+# Secrets
+secrets/
+
 # OS / Editor
 .DS_Store
 Thumbs.db

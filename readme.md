@@ -507,3 +507,170 @@ This clarifies how many squares the king moves during castling in both Standard 
    - Kingside: king moves 3 squares (`d1 → g1`).
 - The presentation layer only transforms coordinates for display and clicks; it does not change how many squares the king moves or which squares are the legal destinations.
 
+
+---
+
+## Unified Rebuild & Run Instructions
+## Native C++ GUI (Experimental)
+
+An optional cross‑platform C++ GUI (Qt6 Widgets) is provided to interact directly with the native engine (no JS / WASM). White is engine‑driven; Black is human‑driven by clicking squares.
+
+### Build Requirements
+- Qt 6 (Widgets module) installed and discoverable by CMake (`Qt6_DIR` or on PATH).
+- Existing native build prerequisites already used for `chessnative`.
+
+### Building the GUI
+```powershell
+cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+cmake --build native/build --config Release --target chess_gui
+```
+If Qt6 is not found, CMake will warn and skip the `chess_gui` target.
+
+### Running
+From the build output directory (adjust path if generator differs):
+```powershell
+native/build/Release/chess_gui.exe
+```
+The GUI loads piece images from `web/img/`. Ensure relative path remains valid (run from repo root or adjust `BoardWidget::setAssetsRoot`).
+
+### Features
+- Board rendering with piece images.
+- Engine plays White via `engine::choose_move`.
+- Click a black piece then a destination square to attempt a Black move.
+- Illegal black moves produce a status message.
+- Supports testing of castling / king safety directly against native logic (use custom FEN by editing `kInitialFen` in `gui/main.cpp`).
+
+### Custom FEN
+Edit `kInitialFen` in `gui/main.cpp` and rebuild to start from a debugging position (e.g. to reproduce suspicious castling scenarios without JS).
+
+### Troubleshooting
+- If images do not appear, verify the working directory so that `../web/img` resolves. Adjust to an absolute path if necessary.
+- To instrument legality decisions further, extend logging inside `filter_legal` (already writes to `logs/` for castling and king checks).
+
+
+This section consolidates the steps to rebuild every component from a clean state: Node dependencies, native Node addon, native C++ engines (`native/` and the modular `engine/`), optional WebAssembly build, tests, and server startup. All paths are relative to the repository root.
+
+### Prerequisites
+- Node.js (LTS) + Python 3 for `node-gyp`.
+- C++ toolchain: MSVC (Windows) or Clang/GCC (macOS/Linux).
+- CMake (for `native/` and `engine/`).
+- Optional: Emscripten SDK (for WASM build of `engine/`). Activate it so `emcmake` is in PATH.
+
+### Key Directories
+- `server/native-addon/` – Node addon (C++ → N-API).
+- `native/` – Lightweight native engine used by the addon (CMakeLists.txt present).
+- `engine/` – Modular full C++ engine (tests, additional components, CMakeLists.txt). Supports native & WASM.
+- `web/wasm/` – Output location for generated WASM artifacts (`engine.js`, `engine.wasm`). Not committed (ignored in `.gitignore`).
+
+### Clean (Optional)
+Run these to remove previous build artifacts (ignore errors if folders absent):
+```powershell
+if (Test-Path server/native-addon/build) { Remove-Item server/native-addon/build -Recurse -Force }
+if (Test-Path native/build) { Remove-Item native/build -Recurse -Force }
+if (Test-Path engine/build) { Remove-Item engine/build -Recurse -Force }
+if (Test-Path engine/build-wasm) { Remove-Item engine/build-wasm -Recurse -Force }
+if (Test-Path web/wasm) { Remove-Item web/wasm -Recurse -Force }
+```
+
+### Install Dependencies
+```powershell
+npm ci
+```
+(`npm install` also works; `ci` is faster/cleaner for locked deps.)
+
+### Build Native Node Addon
+```powershell
+npm run build:addon
+```
+This invokes: `node-gyp rebuild --directory server/native-addon`.
+
+### Build Lightweight Native Engine (`native/`)
+```powershell
+cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release
+cmake --build native/build --config Release
+```
+Artifacts go under `native/build/`.
+
+### Build Modular C++ Engine (`engine/`) – Native
+```powershell
+cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release
+cmake --build engine/build --config Release
+```
+If tests are integrated via CTest (present `tests_main.cpp` suggests yes):
+```powershell
+ctest --test-dir engine/build -C Release --output-on-failure
+```
+
+### Build Modular C++ Engine (`engine/`) – WebAssembly (Optional)
+Requires Emscripten. Option A (CMake):
+```powershell
+emcmake cmake -S engine -B engine/build-wasm -DBUILD_WASM=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build engine/build-wasm -j
+```
+Place (or copy) resulting `engine.js` / `engine.wasm` into `web/wasm/` if not already emitted there.
+
+Option B (Direct em++ example) – adapt exported symbols as needed:
+```powershell
+em++ engine/src/example.cpp \
+   -O3 -sALLOW_MEMORY_GROWTH=1 -sMODULARIZE=1 -sEXPORT_ES6=1 \
+   -sEXPORTED_FUNCTIONS='["_engine_choose"]' \
+   -sEXPORTED_RUNTIME_METHODS='["cwrap","UTF8ToString"]' \
+   -o web/wasm/engine.js
+```
+Generates `web/wasm/engine.js` & `web/wasm/engine.wasm`.
+
+### JavaScript / TypeScript Notes
+- Plain JS lives under `web/js/` and `src/`—no bundler required.
+- TypeScript files found under `web/ws/` (`promotionThreat.ts`, etc.). No `tsconfig.json` or build script currently provided; if you wish to compile them:
+```powershell
+npm install --save-dev typescript
+npx tsc --init
+npx tsc web/ws/promotionThreat.ts --outDir web/ws/dist
+```
+Integrate output manually or add a script (optional). Not required for core engine rebuild.
+
+### Run Tests
+JS/Vitest suite:
+```powershell
+npm test
+```
+Native castling & legality harness:
+```powershell
+npm run test:native
+```
+Engine (CTest) if built:
+```powershell
+ctest --test-dir engine/build -C Release --output-on-failure
+```
+
+### Start Server (Foreground)
+```powershell
+npm run serve:fg
+```
+Starts: kill port 8080 → rebuild addon → run `server/server.js` in current window.
+
+### Start Server (Background Minimized)
+```powershell
+npm run serve
+```
+Runs port kill, addon rebuild, then launches minimized Node process.
+
+### One-Liner Full Rebuild & Run (Including Optional WASM)
+> Adjust/remove WASM segment if Emscripten absent.
+```powershell
+npm ci; npm run build:addon; cmake -S native -B native/build -DCMAKE_BUILD_TYPE=Release; cmake --build native/build --config Release; cmake -S engine -B engine/build -DCMAKE_BUILD_TYPE=Release; cmake --build engine/build --config Release; emcmake cmake -S engine -B engine/build-wasm -DBUILD_WASM=ON -DCMAKE_BUILD_TYPE=Release; cmake --build engine/build-wasm -j; npm test; npm run test:native; npm run serve:fg
+```
+
+### Troubleshooting Quick Reference
+- Addon build fails: ensure Python 3 and MSVC Build Tools installed (`npm config get msvs_version` for older setups).
+- WASM missing at runtime: verify `web/wasm/engine.js` & `engine.wasm` exist (optional feature; UI degrades gracefully if absent).
+- Port 8080 busy: manually free with `Get-Process -Id (Get-NetTCPConnection -LocalPort 8080).OwningProcess | Stop-Process` or rely on `scripts/kill-port.js`.
+- CTest not discovering tests: confirm `tests_main.cpp` is added to an executable in `engine/CMakeLists.txt` and `enable_testing()` invoked.
+
+### Minimal Rebuild (Addon + Server Only)
+```powershell
+npm ci; npm run build:addon; npm run serve:fg
+```
+
+---
+

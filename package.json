@@ -4,12 +4,14 @@
   "private": true,
   "license": "MIT",
   "scripts": {
+    "rebuildall": "node ./rebuildall.mjs",
     "test": "vitest run",
     "test:stockfish-race": "node scripts/stockfish_promotion_race_test.js",
     "build:addon": "node-gyp rebuild --directory server/native-addon",
     "serve:fg": "node scripts/kill-port.js 8080 && npm run build:addon && node server/server.js",
     "serve": "powershell -NoProfile -Command \"& { node scripts/kill-port.js 8080; npm run build:addon; Start-Process -WindowStyle Minimized -FilePath node -ArgumentList 'server/server.js' }\"",
-    "test:native": "node server/bin/native-castling-tests.js"
+    "test:native": "node server/bin/native-castling-tests.js",
+    "gui": "native/build/Release/chess_gui.exe"
   },
   "dependencies": {
     "express": "^4.19.2",

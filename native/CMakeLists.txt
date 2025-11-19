@@ -16,6 +16,30 @@ endif()
 add_executable(perft_runner perft.cpp)
 target_link_libraries(perft_runner PRIVATE chessnative)
 
+# ================= GUI (Qt) =================
+# Optional cross-platform GUI: requires Qt6 (Widgets). If not found, target is skipped.
+find_package(Qt6 COMPONENTS Core Gui Widgets QUIET)
+if (Qt6_FOUND)
+  message(STATUS "Qt6 found: enabling chess_gui target")
+  add_executable(chess_gui
+    ../gui/main.cpp
+    ../gui/BoardWidget.cpp
+    ../gui/EngineController.cpp
+  )
+  target_include_directories(chess_gui PRIVATE ../gui)
+  target_link_libraries(chess_gui PRIVATE chessnative Qt6::Core Qt6::Gui Qt6::Widgets)
+  target_compile_definitions(chess_gui PRIVATE CHESS_GUI_QT=1)
+  if (MSVC)
+    target_compile_options(chess_gui PRIVATE /Zc:__cplusplus)
+  endif()
+else()
+  message(WARNING "Qt6 not found; chess_gui target disabled. Install Qt6 (Widgets) to build GUI.")
+endif()
+
+# Runner to dump legal moves from a FEN (for debugging castling legality etc.)
+add_executable(legal_moves_runner legal_moves_runner.cpp)
+target_link_libraries(legal_moves_runner PRIVATE chessnative)
+
 # Detect compiler for AVX2 flags
 if(ENABLE_AVX2)
   if (MSVC)

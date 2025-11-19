@@ -4,6 +4,9 @@
 #include <array>
 #include <algorithm>
 #include <sstream>
+#include <fstream>   // logging illegal castling reverification
+#include <chrono>
+#include <ctime>
 #if defined(_MSC_VER)
 #include <intrin.h>
 #endif
@@ -159,6 +162,28 @@ void init_masks() {
     }
     masksInit = true;
 #else
+    // --- Common basic attack masks (pawns, knights, king) ---
+    for (int sq=0; sq<64; ++sq) {
+        int r = rank_of(sq), f = file_of(sq);
+        // Pawn attacks TO sq (sources that attack sq)
+        if (r < 7) { // white pawns attack upward (toward rank increasing in board representation rank 0->7?)
+            if (f > 0) pawnAttW[sq] |= bb(sq + 8 - 1);
+            if (f < 7) pawnAttW[sq] |= bb(sq + 8 + 1);
+        }
+        if (r > 0) { // black pawns attack downward
+            if (f > 0) pawnAttB[sq] |= bb(sq - 8 - 1);
+            if (f < 7) pawnAttB[sq] |= bb(sq - 8 + 1);
+        }
+        // Knight mask
+        const int kd[8][2]={{-2,-1},{-2,1},{-1,-2},{-1,2},{1,-2},{1,2},{2,-1},{2,1}};
+        for (auto &d: kd) {
+            int rr=r+d[0], ff=f+d[1]; if (rr>=0&&rr<8&&ff>=0&&ff<8) knightMask[sq] |= bb(rr*8+ff);
+        }
+        // King mask
+        for (int dr=-1; dr<=1; ++dr) for (int dc=-1; dc<=1; ++dc) {
+            if (!dr && !dc) continue; int rr=r+dr, ff=f+dc; if (rr>=0&&rr<8&&ff>=0&&ff<8) kingMask[sq] |= bb(rr*8+ff);
+        }
+    }
     // --- Magic bitboards initialization ---
     // Preselected magic numbers (source: widely used sets; adapted for 64-bit engines)
     static const uint64_t ROOK_MAGICS[64] = {
@@ -270,14 +295,21 @@ static inline uint64_t bishop_attacks(uint64_t occ, int sq){
 }
 #else
 static inline uint64_t rook_attacks(uint64_t occ, int sq){
-    uint64_t blockers = occ & rookMagicMask[sq];
-    uint64_t index = (blockers * rookMagic[sq]) >> rookMagicShift[sq];
-    return rookMagicTable[rookMagicOffset[sq] + index];
+    // Dynamic ray tracing for correctness (edge blockers included)
+    int r = rank_of(sq), f = file_of(sq); uint64_t att=0ULL;
+    for (int rr=r+1; rr<8; ++rr){ int s=rr*8+f; att |= bb(s); if (occ & bb(s)) break; }
+    for (int rr=r-1; rr>=0; --rr){ int s=rr*8+f; att |= bb(s); if (occ & bb(s)) break; }
+    for (int ff=f+1; ff<8; ++ff){ int s=r*8+ff; att |= bb(s); if (occ & bb(s)) break; }
+    for (int ff=f-1; ff>=0; --ff){ int s=r*8+ff; att |= bb(s); if (occ & bb(s)) break; }
+    return att;
 }
 static inline uint64_t bishop_attacks(uint64_t occ, int sq){
-    uint64_t blockers = occ & bishopMagicMask[sq];
-    uint64_t index = (blockers * bishopMagic[sq]) >> bishopMagicShift[sq];
-    return bishopMagicTable[bishopMagicOffset[sq] + index];
+    int r = rank_of(sq), f = file_of(sq); uint64_t att=0ULL;
+    for (int rr=r+1, ff=f+1; rr<8 && ff<8; ++rr,++ff){ int s=rr*8+ff; att |= bb(s); if (occ & bb(s)) break; }
+    for (int rr=r+1, ff=f-1; rr<8 && ff>=0; ++rr,--ff){ int s=rr*8+ff; att |= bb(s); if (occ & bb(s)) break; }
+    for (int rr=r-1, ff=f+1; rr>=0 && ff<8; --rr,++ff){ int s=rr*8+ff; att |= bb(s); if (occ & bb(s)) break; }
+    for (int rr=r-1, ff=f-1; rr>=0 && ff>=0; --rr,--ff){ int s=rr*8+ff; att |= bb(s); if (occ & bb(s)) break; }
+    return att;
 }
 #endif
 
@@ -682,8 +714,8 @@ void filter_legal(const Position& pos, const std::vector<Move>& pseudo, std::vec
     legal.clear();
     bool white = (pos.sideToMove==0);
     uint64_t kingBB = white? pos.bb.WK : pos.bb.BK; if (!kingBB) return; int kingSq = lsb_index(kingBB);
-    // Determine current checkers
-    uint64_t checkers = attackers_to(pos, kingSq, white?1:0);
+    // Determine current opponent checkers (pieces attacking our king)
+    uint64_t checkers = attackers_to(pos, kingSq, white?0:1);
     int checkerCount = popcount64(checkers);
     // Precompute blocking mask if single checker and sliding
     uint64_t blockMask = 0ULL; int checkerSq = -1;
@@ -710,11 +742,151 @@ void filter_legal(const Position& pos, const std::vector<Move>& pseudo, std::vec
             // Non-king move must capture checker or block
             if (!(blockMask & bb(m.to))) continue;
         }
+        bool isKingMove = ((white? pos.bb.WK: pos.bb.BK) & bb(m.from)) != 0ULL;
+        // Trace pseudo king moves before application
+        if (isKingMove) {
+            std::ofstream trace("logs/filter_legal_trace.log", std::ios::app);
+            if (trace.good()) {
+                auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                trace << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S")
+                      << " phase=pre_apply"
+                      << " FEN=" << to_fen(pos)
+                      << " move=" << (char)('a'+file_of(m.from)) << (char)('1'+rank_of(m.from))
+                      << (char)('a'+file_of(m.to)) << (char)('1'+rank_of(m.to))
+                      << " checkerCount=" << checkerCount
+                      << " onlyKingMoves=" << (onlyKingMoves?1:0)
+                      << " blockMaskHit=" << ((blockMask & bb(m.to))?1:0)
+                      << std::endl;
+            }
+        }
         Position child; apply_move(const_cast<Position&>(pos), m, child); // apply_move takes non-const ref
-        uint64_t childKingBB = child.sideToMove? child.bb.WK : child.bb.BK;
-        if (!childKingBB) continue; int childKingSq = lsb_index(childKingBB);
-        if (square_attacked(child, childKingSq, child.sideToMove?0:1)) continue;
+        bool movingWhite = white; // side that just moved
+        uint64_t ownKingBB = movingWhite ? child.bb.WK : child.bb.BK;
+        if (!ownKingBB) continue; int ownKingSq = lsb_index(ownKingBB);
+        // Reject if our own king is attacked by opponent after the move
+        bool kingInCheckAfter = square_attacked(child, ownKingSq, movingWhite?0:1);
+        if (kingInCheckAfter) {
+            // Debug instrumentation: log rejected king moves and captures in check scenarios
+            if (isKingMove) {
+                std::ofstream dbg("logs/king_filter_debug.log", std::ios::app);
+                if (dbg.good()) {
+                    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                    dbg << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S")
+                        << " FEN=" << to_fen(pos)
+                        << " move_rejected=" << (char)('a'+file_of(m.from)) << (char)('1'+rank_of(m.from))
+                        << (char)('a'+file_of(m.to)) << (char)('1'+rank_of(m.to))
+                        << " reason=king_still_in_check_after_move" << std::endl;
+                }
+                std::ofstream trace("logs/filter_legal_trace.log", std::ios::app);
+                if (trace.good()) {
+                    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                    trace << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S")
+                          << " phase=post_apply_reject"
+                          << " FEN_child=" << to_fen(child)
+                          << " move=" << (char)('a'+file_of(m.from)) << (char)('1'+rank_of(m.from))
+                          << (char)('a'+file_of(m.to)) << (char)('1'+rank_of(m.to))
+                          << " kingSq=" << ownKingSq
+                          << " attacked=1" << std::endl;
+                }
+            }
+            continue;
+        }
+        if (isKingMove) {
+            std::ofstream trace("logs/filter_legal_trace.log", std::ios::app);
+            if (trace.good()) {
+                auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                trace << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S")
+                      << " phase=post_apply_accept"
+                      << " FEN_child=" << to_fen(child)
+                      << " move=" << (char)('a'+file_of(m.from)) << (char)('1'+rank_of(m.from))
+                      << (char)('a'+file_of(m.to)) << (char)('1'+rank_of(m.to))
+                      << " kingSq=" << ownKingSq
+                      << " attacked=0" << std::endl;
+            }
+        }
         legal.push_back(m);
+    }
+
+    // --- Castling reverification & logging ---
+    // Some illegal castling cases have been observed in manual tests. We perform an explicit
+    // second pass over tentative legal moves to revalidate castling preconditions and
+    // filter out any remaining illegal castle moves. (Reverification step.)
+    auto verify_castle = [&](const Move& m)->bool {
+        if (!m.isCastle) return true; // non-castle always OK here
+        bool w = (pos.sideToMove==0);
+        // Original king square expectation (standard chess starting squares)
+        int kingStart = w ? 4 : 60; // e1 / e8
+        if (m.from != kingStart) return false; // unexpected origin (engine does not support Chess960 yet)
+        // Helper to test emptiness & attacks
+        auto empty_sq = [&](int sq){ return (pos.bb.occAll & bb(sq)) == 0ULL; };
+        auto attacked_by_opp = [&](int sq){ return square_attacked(pos, sq, w?0:1); };
+        if (w) {
+            if (m.to == 6) { // O-O white: e1->g1
+                bool rightsOk = (pos.castleRights & 1) != 0;
+                bool rookOk = (pos.bb.WR & bb(7)) != 0ULL;
+                bool pathEmpty = empty_sq(5) && empty_sq(6);
+                bool squaresSafe = !attacked_by_opp(4) && !attacked_by_opp(5) && !attacked_by_opp(6);
+                return rightsOk && rookOk && pathEmpty && squaresSafe;
+            } else if (m.to == 2) { // O-O-O white: e1->c1
+                bool rightsOk = (pos.castleRights & 2) != 0;
+                bool rookOk = (pos.bb.WR & bb(0)) != 0ULL;
+                bool pathEmpty = empty_sq(3) && empty_sq(2) && empty_sq(1);
+                bool squaresSafe = !attacked_by_opp(4) && !attacked_by_opp(3) && !attacked_by_opp(2);
+                return rightsOk && rookOk && pathEmpty && squaresSafe;
+            }
+        } else {
+            if (m.to == 62) { // O-O black: e8->g8
+                bool rightsOk = (pos.castleRights & 4) != 0;
+                bool rookOk = (pos.bb.BR & bb(63)) != 0ULL;
+                bool pathEmpty = empty_sq(61) && empty_sq(62);
+                bool squaresSafe = !attacked_by_opp(60) && !attacked_by_opp(61) && !attacked_by_opp(62);
+                return rightsOk && rookOk && pathEmpty && squaresSafe;
+            } else if (m.to == 58) { // O-O-O black: e8->c8
+                bool rightsOk = (pos.castleRights & 8) != 0;
+                bool rookOk = (pos.bb.BR & bb(56)) != 0ULL;
+                bool pathEmpty = empty_sq(59) && empty_sq(58) && empty_sq(57);
+                bool squaresSafe = !attacked_by_opp(60) && !attacked_by_opp(59) && !attacked_by_opp(58);
+                return rightsOk && rookOk && pathEmpty && squaresSafe;
+            }
+        }
+        return false; // Unknown castle target square
+    };
+    if (!legal.empty()) {
+        std::vector<Move> revised; revised.reserve(legal.size());
+        auto encodeSq = [](int sq){ char f = char('a' + file_of(sq)); char r = char('1' + rank_of(sq)); return std::string({f,r}); };
+        bool anyLogged = false;
+        for (const auto& m : legal) {
+            if (!verify_castle(m)) {
+                // Log illegal castling to file
+                std::ofstream logFile("logs/illegal_castling_reverify.log", std::ios::app);
+                if (logFile.good()) {
+                    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+                    logFile << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S")
+                            << " FEN=" << to_fen(pos)
+                            << " move=" << encodeSq(m.from) << encodeSq(m.to)
+                            << " note=Filtered illegal castling during reverification" << std::endl;
+                    anyLogged = true;
+                }
+            } else {
+                revised.push_back(m);
+            }
+        }
+        if (anyLogged) {
+            // Optional: could add in-memory flag or stats later
+        }
+        legal.swap(revised);
+    }
+    if (legal.empty()) {
+        std::ofstream trace("logs/filter_legal_trace.log", std::ios::app);
+        if (trace.good()) {
+            auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+            trace << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S")
+                  << " phase=final_no_legal"
+                  << " FEN=" << to_fen(pos)
+                  << " checkerCount=" << checkerCount
+                  << " pseudoCount=" << pseudo.size()
+                  << std::endl;
+        }
     }
 }
 
